@@ -1,0 +1,3197 @@
+---
+title: "SeuratAnalysis"
+author: "Andy Graham"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(echo = TRUE)
+
+#Set random seed
+set.seed(123)
+RNGkind("L'Ecuyer-CMRG")
+
+##Load required packages
+library(msigdbr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(Matrix)
+library(EnsDb.Mmusculus.v79)
+library(arrow)
+library(SingleCellExperiment)
+library(readr)
+library(GenomicRanges)
+library(ComplexHeatmap)
+library(patchwork)
+library(Seurat)
+library(gtools)
+library(Signac)
+library(ggtext)
+library(glue)
+library(patchwork)
+library(ggplot2)
+library(scCustomize)
+library(future)
+library(ggdark)
+library(tidyverse)
+library(ggrepel)
+library(clusterProfiler)
+library(enrichplot)
+library(fgsea)
+library(edgeR)
+library(scDblFinder)
+library(wrapr)
+library(transformGamPoi)
+library(ggprism)
+#devtools::install("../../../../../apps/EasyMultiome/") #Must run at one point
+library(EasyMultiome)
+#library(consensusClustR)
+#devtools::load_all("../../../../../apps/EasyMulti_DElegate/")
+httr::set_config(httr::config(ssl_verifypeer = FALSE))
+
+##Start Python
+library(cluster)
+library(reticulate)
+path_to_python <- "/home/andy/anaconda3/bin/python"
+use_python(path_to_python)
+
+##Set Settings
+options(future.globals.maxSize = 10000 * 1024^2)
+
+# Some relative paths
+cellRanger = "../../../cellrangerOutput/"
+clusters = "../clusters/"
+plots = "../plots/"
+objects =  "../objects/"
+
+# Colour palette
+cb_pallette = c("#777a78", "#E4E1E3FF", "#F6222EFF", "#FE00FAFF", "#16FF32FF", "#3283FEFF", "#FEAF16FF", "#B00068FF", "#1CFFCEFF", "#90AD1CFF", "#2ED9FFFF", "#DEA0FDFF", "#AA0DFEFF", "#F8A19FFF", "#325A9BFF", "#C4451CFF", "#1C8356FF", "#85660DFF", "#B10DA1FF", "#FBE426FF", "#1CBE4FFF", "#FA0087FF", "#FC1CBFFF", "#F7E1A0FF", "#C075A6FF", "#782AB6FF", "#AAF400FF", "#BDCDFFFF", "#f2b672", "#B5EFB5FF", "#f75c02", "#5c0404", "#160459", "#FFFFCC", "#DF65B0", "#B3E2CD", "#FBB4AE", "#1F78B4", "#BDC9E1","#FDAE61", "#FFFF99","#02818A", "#F1B6DA","#DFC27D")
+```
+
+First lets prepare some TF motifs for later
+```{r}
+source("processHOCOMOCO12motifs.R")
+```
+
+Lets load the Multiome Object and the Reference-Based Cell Annotations From Python
+```{r}
+Multiome = readRDS(paste0(objects, "Multiome.rds"))
+annotations = read.csv("../../cellAnnotation/analysis/MultiomeMetadataAnnotated.csv")
+
+Multiome$scVI_annots = annotations$transf_cell_type
+compareAnnots = as.data.frame(table(Idents(Multiome), Multiome$scVI_annots))
+
+DimPlot(Multiome, label = TRUE) + NoLegend()
+DimPlot(Multiome, label = TRUE, group.by = "scVI_annots") + NoLegend()
+table(subset(Multiome, consensusClust %in% grep("^4", Multiome$consensusClust, value = T))$consensusClust, subset(Multiome, consensusClust %in% grep("^4", Multiome$consensusClust, value = T))$scVI_annots)
+```
+
+
+Now lets label cell types, with the most accurate annotations we can do from our previous manual markers and these reference-based assignments
+
+```{r}
+Idents(Multiome) = factor(Multiome$consensusClust)
+new.cluster.ids = c("RGLs", "ExNeu.CA3.Ven", "ExNeu.CA3.Dor", "ExNeu.CA2", "ExNeu.Sub.Col5a2", "ExNeu.DG.Mossy", "OPCs",  "NSCs", "Pericytes", "Neuroblasts", "Astrocytes","Cajal-Retzus Cells", "ExNeu.CA1.Sup", "ExNeu.CA1.Ven","ExNeu.CA1.Dor.Potentiated", "ExNeu.CA1.Dor", "IN.Meis2", "IN.Ntng1","IN.Pvalb","IN.Cck", "IN.Sst", "IN.Lamp5", "IN.Vip", "ExNeu.Sub.Gpc3", "ExNeu.Sub.Post","ExNeu.Sub.Cbln4", "ExNeu.Sub.Sup","ExNeu.Sub.Fn1", "ExNeu.Sub.DP", "ExNeu.Ser", "ExNeu.CTX.L5/6", "ExNeu.CTX.ENT.L6b", "ExNeu.CTX.ENT.L6", "ExNeu.CTX.ENT.L6", "ExNeu.Sub.NP", "ExNeu.Sub.CT", "ExNeu.Sub.CT", "ExNeu.Sub.PPP", "ExNeu.DG.GC", "Oligodendrocytes","nfOLG",  "MG.Hm", "MG.ARM",  "BAM")
+
+names(new.cluster.ids) <- levels(Multiome)
+Multiome <- RenameIdents(Multiome, new.cluster.ids)
+Multiome$Cluster_ID = paste0(Idents(Multiome), " ", Multiome$ID)
+
+Idents(Multiome) = factor(Idents(Multiome), levels = c("ExNeu.DG.GC", "ExNeu.CA1.Ven", "ExNeu.CA1.Sup", "ExNeu.CA1.Dor", "ExNeu.CA1.Dor.Potentiated", "ExNeu.CA2", "ExNeu.CA3.Ven", "ExNeu.CA3.Dor", "ExNeu.Sub.Gpc3", "ExNeu.Sub.Col5a2", "ExNeu.Sub.Cbln4", "ExNeu.Sub.Fn1", "ExNeu.Sub.Post", "ExNeu.Sub.Sup", "ExNeu.Sub.DP", "ExNeu.Sub.Pre", "ExNeu.Sub.NP",  "ExNeu.Sub.CT", "ExNeu.Sub.PPP",   "ExNeu.CTX.ENT.L6", "ExNeu.CTX.L5/6", "ExNeu.CTX.ENT.L6b", "ExNeu.Ser", "ExNeu.DG.Mossy", "IN.Meis2", "IN.Ntng1","IN.Pvalb","IN.Cck", "IN.Sst", "IN.Lamp5", "IN.Vip", "RGLs", "NSCs", "Neuroblasts", "Cajal-Retzus Cells", "Oligodendrocytes","nfOLG","OPCs",   "MG.Hm", "MG.ARM",  "BAM", "Astrocytes", "Pericytes"))
+```
+
+Some plots to visualise these assignments
+
+```{r}
+#Make sure markers are in scaled features for heatmap
+markers = c("Syt1","Snap25", "Slc17a7","Gad1","Gad2","Neurod1", "Sox11", "Reln", "Mbp", "Plp1", "Pdgfra","Tmem119", "Cx3cr1", "Aqp4","Gja1", "Igfbpl1")
+Multiome[["Heatmap"]] = Multiome[["RNA"]]
+DefaultAssay(Multiome) = "Heatmap"
+VariableFeatures(Multiome) = markers
+Multiome = ScaleData(Multiome, assay = "Heatmap")
+Seurat::DoHeatmap(subset(Multiome, downsample = 50), label=T, features = markers, assay = "Heatmap", slot = "scale.data", disp.min = 0, disp.max = 1.25, group.colors = cb_pallette) + theme(text = element_text(size =20, face = "bold"), legend.key.size = unit(2, "cm"))  + 
+  scale_fill_gradientn(colors = viridis::viridis(n=10), na.value = "white") + theme(legend.position="top", 
+                                                                                    plot.margin = margin(t = 0, r = 100, b = 10, l = 10)) + guides(color = "none") 
+ggsave(paste0(plots, "Marker_Heatmap.png"), height = 12, width = 20, limitsize = FALSE)
+DefaultAssay(Multiome) = "RNA"
+Multiome[["Heatmap"]] = NULL
+
+p1 = DimPlot(Multiome,  pt.size = 1, label = F, reduction = "umap") +  scale_colour_manual(values=cb_pallette) + theme_void()
+p1 = LabelClusters(p1, id = "ident",  fontface = "bold", color = "black", repel = T, size=6.5)
+p1 = p1 + NoLegend()
+
+p2= ggplot(data.frame(x=100, y=100), aes(x=x, y=y)) + geom_point() + xlim(c(0,10)) + ylim(c(0,10)) + theme_classic() + ylab("UMAP 2") + xlab("UMAP 1") + theme(axis.text = element_blank(), axis.ticks = element_blank(), axis.line = element_line(arrow = arrow(angle = 15, length = unit(.5, "cm"), type = "closed"))) 
+        
+layout = c(
+    area(t=9, l=1, b = 12, r= 4),
+  area(t=1, l=1.5, b = 11.5, r= 11)
+
+)
+
+p2 + p1 + plot_layout(design = layout)  
+
+ggsave(paste0(plots, "UMAP.png"), height = 12, width = 12)
+
+pt <- table(Idents(Multiome), Multiome$ID)
+pt <- as.data.frame(pt)
+
+color_list <- ggplotColours(n=length(unique(Idents(Multiome))))
+
+ggplot(pt, aes(x = Var2, y = Freq, fill = Var1)) +
+  theme_bw(base_size = 15) +
+  geom_col(position = "fill", width = 0.5) +
+  xlab("Sample") +
+  ylab("Proportion") +
+  scale_fill_manual(values = color_list) +
+  hrbrthemes::theme_ipsum( axis_title_just = "centre", axis_title_size = 20, base_family = "Arial", axis_text_size = 20) + 
+  guides(fill=guide_legend(title="Cluster")) + xlab("") +
+  theme(text = element_text(size =25), legend.position=c(0.45, 1),legend.direction = "horizontal", legend.text = element_text(size = 17.5), legend.title = element_text(size=20),legend.key.size = unit(1,"line"), axis.text = element_text(size = 30)) + coord_flip()  + theme_ggprism_mod() +  scale_fill_manual(values=cb_pallette) 
+ggsave(paste0(plots, "ClustersbyID.png"), dpi = 600, width = 15, height = 6)
+
+saveRDS(Multiome, file = paste0(objects, "Multiome.rds"))
+```
+
+Now let's analyse oligodendrocytes in more detail
+```{r}
+###--------------------Analysis of Oligos
+Cluster = "OLG"
+
+Multiome = readRDS(paste0(objects, "Multiome.rds"))
+Multiome = subset(Multiome, idents  = c("Oligodendrocytes","nfOLG"))
+gc()
+
+###Make Directories
+dir.create(file.path(clusters, Cluster), showWarnings = FALSE)
+dir.create(file.path(clusters, Cluster, "/objects/"), showWarnings = FALSE)
+dir.create(file.path(clusters, Cluster, "/plots/"), showWarnings = FALSE)
+dir.create(file.path(clusters, Cluster, "/DifferentialAccessibility/"), showWarnings = FALSE)
+dir.create(file.path(clusters, Cluster, "/DifferentialExpression/"), showWarnings = FALSE)
+
+###Normalise and run PCA on RNA data, remove MT, RB, and CC genes before PCA as these may not be useful to distibuish cell states
+Multiome[["RNA"]]$data = shifted_log_transform(Multiome[["RNA"]]$counts, pseudo_count = 1, size_factors = "deconvolution")
+
+#Find deviant genes
+Multiome.sce = as.SingleCellExperiment(Multiome)
+Multiome.sce = scry::devianceFeatureSelection(Multiome.sce, assay="counts", sorted=TRUE)
+#Plot to see how many genes show informative deviance
+ggplot(as.data.frame(rowData(Multiome.sce)), aes(x=as.numeric(1:nrow(rowData(Multiome.sce))), y=binomial_deviance))+
+  geom_line(color="darkblue") + xlab("ranked genes") + ggprism::theme_prism() + geom_vline(xintercept=2000)
+#Set deviant genes as variable features
+VariableFeatures(Multiome) = row.names(rowData(Multiome.sce))[c(1:2000)]
+rm(Multiome.sce)
+#Remove mito and rb genes from these, as they are likely uninformative
+load(paste0(objects, "geneSets/MT_RB_CC.Multiome.rds"))
+VariableFeatures(Multiome) = VariableFeatures(Multiome)[!VariableFeatures(Multiome) %in% c( MT, RB)]
+
+#Scale and run PCA
+Multiome = ScaleData(Multiome)
+Multiome = RunPCA(Multiome)
+ElbowPlot(Multiome, ndims = 50)
+```
+
+```{r}
+Cluster = "OLG"
+
+Multiome <- RunUMAP(Multiome, dims=1:6)
+Multiome = FindNeighbors(Multiome,dims = 1:6)
+DimPlot(Multiome, label = TRUE)
+DotPlot(Multiome, features = c("Nckap5", "Pcdh7","Gpr37", "Gpr17", "Synpr","Man1a","Opalin", "C4b", "Serpina3n", "Bcas1", "Mbp", "Plp1","Klk6", "Cd74"), assay = "RNA", group.by = "consensusClust") 
+
+saveRDS(Multiome,  file = paste0(clusters,Cluster, "/objects/Multiome.rds"))
+```
+
+```{r}
+Cluster = "OLG"
+
+Multiome$Age = factor(ifelse(grepl("^Y", Multiome$ID), "Young", "Aged"), levels = c("Young", "Aged"))
+Multiome$Memory = factor(ifelse(grepl("*N$", Multiome$ID), "Naive", "CFC"), levels = c("Naive", "CFC"))
+Multiome$ID = factor(Multiome$ID, levels = c("YN", "YC", "ON", "OC"))
+
+pt <- table(Idents(Multiome), Multiome$Age)
+pt <- as.data.frame(pt)
+
+color_list <- ggplotColours(n=length(unique(Multiome$consensusClust)))
+
+ggplot(pt, aes(x = Var2, y = Freq, fill = Var1)) +
+  theme_bw(base_size = 15) +
+  geom_col(position = "fill", width = 0.5) +
+  xlab("Sample") +
+  ylab("Proportion") +
+  scale_fill_manual(values = color_list) +
+  guides(fill=guide_legend(title="Cluster")) + xlab("Months of Age") +
+  theme(text = element_text(size =25)) + theme(legend.position="top", legend.text = element_text(size = 16), legend.title = element_text(size=16)) + theme(legend.key.size = unit(1,"line"))
+ggsave(paste0(clusters ,Cluster,  "/plots/ClustersbyAge.png"), dpi = 600, width = 6, height = 6.5)
+
+pt <- table(Idents(Multiome), Multiome$ID)
+pt <- as.data.frame(pt)
+pt = pt[!pt$Freq == 0,]
+
+ggplot(pt, aes(x = Var2, y = Freq, fill = Var1)) +
+  theme_bw(base_size = 15) +
+  geom_col(position = "fill", width = 0.5) +
+  xlab("Sample") +
+  ylab("Proportion") +
+  scale_fill_manual(values = color_list) +
+  guides(fill=guide_legend(title="Cluster")) + xlab("Sample")  +
+  hrbrthemes::theme_ipsum( axis_title_just = "centre", axis_title_size = 15, base_family = "Arial", subtitle_size = 30) +
+  theme(text = element_text(size =25), legend.position="top", legend.text = element_text(size = 20), legend.title = element_text(size=20),legend.key.size = unit(1,"line"), axis.text = element_text(size = 20), strip.text.x = element_text(size = 20))
+ggsave(paste0(clusters ,Cluster,  "/plots/ClustersbyID.png"), dpi = 600, width = 8.5, height = 6)
+
+#UMAP
+library(patchwork)
+
+p1 = DimPlot(Multiome,  pt.size = 1, label = TRUE, label.size = 6) + theme_void()
+p1 = p1 + NoLegend() 
+
+p2= ggplot(data.frame(x=100, y=100), aes(x=x, y=y)) + geom_point() + xlim(c(0,10)) + ylim(c(0,10)) + theme_classic() + ylab("UMAP 2") + xlab("UMAP 1") + theme(axis.text = element_blank(), axis.ticks = element_blank(), axis.line = element_line(arrow = arrow(angle = 15, length = unit(.5, "cm"), type = "closed")))
+        
+layout = c(
+  area(t=9, l=1, b = 12, r= 4),
+  area(t=1, l=1.5, b = 11.5, r= 11)
+)
+
+p2 + p1 + plot_layout(design = layout)
+
+ggsave(paste0(clusters ,Cluster,  "/plots/UMAP.png"), height = 5, width = 5)
+
+p1 = DimPlot(Multiome,  pt.size = 1, label = TRUE, label.size = 6) + theme_void()  + scale_colour_manual(values=c("lightgrey", "#46B9DB"))
+p1 = p1 + NoLegend() 
+
+p2= ggplot(data.frame(x=100, y=100), aes(x=x, y=y)) + geom_point() + xlim(c(0,10)) + ylim(c(0,10)) + theme_classic() + ylab("UMAP 2") + xlab("UMAP 1") + theme(axis.text = element_blank(), axis.ticks = element_blank(), axis.line = element_line(arrow = arrow(angle = 15, length = unit(.5, "cm"), type = "closed"))) 
+        
+layout = c(
+  area(t=9, l=1, b = 12, r= 4),
+  area(t=1, l=1.5, b = 11.5, r= 11)
+)
+
+p2 + p1 + plot_layout(design = layout)
+
+ggsave(paste0(clusters ,Cluster,  "/plots/UMAP_blue.png"), height = 5, width = 5)
+
+##Differentiating OPC Cluster Markers
+DotPlot(Multiome, features = list(nfOLG = c("Plekha1","Synpr","Man1a","Bcas1", "Gpr37"), Myelin = c("Mbp", "Plp1")), assay = "RNA", scale.min = 0, dot.scale = 13, scale = F)  + viridis::scale_color_viridis(option="D") + labs(title="Myelin-Forming OLG Markers") + xlab("") + ylab("")  + theme_prism() + 
+  theme( legend.key.size = unit(0.5,"line"), legend.position	=c(0.4,1.2), legend.box	= "vertical", legend.direction = "horizontal",   legend.box.margin =  margin(t = 0, r = 0, b = 1.5, l = 0, unit = "cm"), plot.margin =  margin(t = 3, unit = "cm"), plot.title = element_text(vjust=17.5), legend.title = element_text(), legend.spacing.y = unit(-0.5, "cm"))
+
+ggsave(paste0(clusters, Cluster, "/plots/NFOL_Markers.png"), device = "png", width = 8, height = 5)
+
+saveRDS(Multiome, file = paste0(clusters, Cluster, "/objects/Multiome.rds"))
+```
+
+```{r}
+###Induction Plot for myOLG
+InductionPlot(Multiome, Var = "nfOLG", Group = "Memory", Group2 = "Age", GroupOrder = c("Naive", "CFC"), Group2Order = c("Young", "Aged"), lineCol = c("#46B9DB", "lightgrey")) 
+ggsave(file = paste0(clusters,Cluster, "/plots/nfOLG_Induction.png"), device = "png", width = 6, height = 6, bg = "White")
+```
+
+Now lets look for disease associated (C4b+/Serpina3n+) OLGs, and see how they're affected by age
+```{r}
+Cluster = "OLG"
+
+Multiome$DAO = ifelse((Multiome[["RNA"]]$counts[rownames(Multiome[["RNA"]]$counts) == "C4b",] > 0) &
+                        (Multiome[["RNA"]]$counts[rownames(Multiome[["RNA"]]$counts) == "Serpina3n",] > 0), "DAO", "No")
+
+pt <- table(Multiome$DAO, Multiome$Age)
+pt <- as.data.frame(pt)
+pt = pt[!pt$Freq == 0,]
+pt$Var1 = factor(pt$Var1, levels = c("No", "DAO"))
+color_list <- ggplotColours(n=length(unique(Multiome$consensusClust)))
+
+ggplot(pt, aes(x = Var2, y = Freq, fill = Var1)) +
+  theme_bw(base_size = 15) +
+  geom_col(position = "fill", width = 0.5) +
+  xlab("Age") +
+  ylab("Proportion") +
+  guides(fill=guide_legend(title="Cluster")) + xlab("")  +
+  ggprism::theme_prism()   + scale_fill_manual(values=cb_pallette[c(2,3)]) +
+  theme(text = element_text(size =25), legend.position="top", legend.text = element_text(size = 20), legend.title = element_blank(),legend.key.size = unit(1,"line"), axis.text = element_text(size = 20), strip.text.x = element_text(size = 20)) +
+  scale_fill_manual(values = c("DAO" = "red", "No" = "#E4E1E3FF"), breaks =c("DAO")) 
+ggsave(paste0(clusters ,Cluster,  "/plots/DAObyAge.png"), dpi = 600, width = 6, height = 6)
+
+###Induction Plot for DAO
+Multiome$Idents = Idents(Multiome)
+Idents(Multiome) = Multiome$DAO
+InductionPlot(Multiome, Var = "DAO", Group = "Age", GroupOrder = c("Young", "Aged"), lineCol = cb_pallette[c(3)]) 
+ggsave(paste0(clusters ,Cluster,  "/plots/DAObyAgeInduction.png"), dpi = 600, width = 6, height = 6)
+Idents(Multiome) = Multiome$Idents
+```
+
+
+```{r}
+###--------------------Call cell-state specific peaks 
+Cluster = "OLG"
+# change the current plan to access parallelisation
+plan("multisession", workers = 10)
+
+Multiome@meta.data$clusters = Idents(Multiome)
+
+###Redo with cell-type peaks
+##Callpeakswithmacs3
+peaks <- CallPeaks(Multiome,
+                   assay="ATAC",
+                   macs2.path="~/anaconda3/bin/macs3",
+                   effective.genome.size = 1.87e9,
+                   group.by = "clusters")
+
+# remove peaks on nonstandard chromosomes and in genomic blacklist regions
+peaks <- keepStandardChromosomes(peaks, pruning.mode = "coarse")
+peaks <- subsetByOverlaps(x = peaks, ranges = blacklist_mm10, invert = TRUE)
+
+# quantify counts in each peak
+macs2_counts <- FeatureMatrix(
+  fragments = Multiome@assays$ATAC@fragments,
+  features = peaks,
+  cells = colnames(Multiome)
+)
+
+# create a new assay using the MACS2 peak set and add it to the Seurat object
+annotation <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79)
+seqlevelsStyle(annotation) <- "UCSC"
+genome(annotation) <- "mm10"
+Multiome[["specific_peaks"]] <- CreateChromatinAssay(
+  counts = macs2_counts,
+  fragments = Multiome@assays$ATAC@fragments,
+  annotation = Multiome@assays$ATAC@annotation,
+  min.cells	= 3
+)
+
+###Export to bed file
+rtracklayer::export.bed(peaks, paste0(clusters,Cluster, "/objects/ConsensusPeaks.bed"))
+plan("sequential")
+
+Multiome[["ATAC"]] = NULL
+
+##Normalise
+Multiome <- FindTopFeatures(Multiome, min.cutoff = 10, assay = "specific_peaks")
+Multiome <- RunTFIDF(Multiome, assay = "specific_peaks")
+Multiome <- RunSVD(Multiome, assay = "specific_peaks")
+
+Multiome$Group = paste0(Multiome$Age,".", Multiome$Memory)
+
+saveRDS(Multiome, file = paste0(clusters,Cluster, "/objects/Multiome.rds"))
+```
+
+Now lets look at how motif accesibility changes between samples and IDs
+```{r}
+Cluster = "OLG"
+Multiome = readRDS(paste0(clusters,Cluster, "/objects/Multiome.rds"))
+
+# Get a list of motif position frequency matrices from the HOCOMOCO database
+pwmList = readRDS(paste0(objects, "motifs/motifPWMlist.rds"))
+      
+# add motif information
+Multiome <- Signac::AddMotifs(
+  object = Multiome,
+  genome = BSgenome.Mmusculus.UCSC.mm10::BSgenome.Mmusculus.UCSC.mm10,
+  pfm = pwmList,
+  assay = "specific_peaks"
+)
+      
+Multiome <- Signac::RunChromVAR(
+  object = Multiome,
+  assay = "specific_peaks",
+  genome = BSgenome.Mmusculus.UCSC.mm10::BSgenome.Mmusculus.UCSC.mm10
+)
+
+saveRDS(Multiome, file = paste0(clusters,Cluster, "/objects/Multiome.rds"))
+```
+
+```{r}
+#Motif activity heatmap by ID
+Cluster = "OLG"
+
+#Motif activity heatmap
+Multiome$clusters = Idents(Multiome)
+Idents(Multiome) = "ID"
+DS = subset(Multiome, downsample = 150)
+Idents(Multiome) = "clusters"
+IDs = factor(DS$ID, levels = c("YN", "YC", "ON", "OC"))
+DefaultAssay(DS) = "chromvar"
+
+matrix =  t(scale(t(DS@assays$chromvar@data)))
+#Remove celll with NAs
+missing = which(is.na(matrix), arr.ind=TRUE)
+if(nrow(missing) > 0){
+  matrix = matrix[, -unique(missing[,2])]
+  IDs = IDs[-unique(missing[,2])]
+}
+
+
+# what's the value range in the matrix
+quantiles = quantile(matrix, c(0.0001, 0.9999))
+## make the black color map to 0. the yellow map to highest and the purle map to the lowest
+col_fun = circlize::colorRamp2(c(quantiles[1], 0, quantiles[2]), c("#FF00FF", "black", "#FFFF00"))
+
+png(file=paste0(clusters,Cluster, "/plots/chromvar_HeatmapID.png"), width = 1050, height = 1250)
+dend2 = cluster_within_group(matrix, IDs)
+region_ht = Heatmap(matrix, cluster_columns = dend2, col = col_fun, row_names_gp = gpar(fontsize = 12.5),show_row_names = FALSE, show_column_names = FALSE, row_title = "TF Motif Accessibility", column_title = "TF Motif Accessibility by Age and Memory State", column_title_gp = gpar(fontsize = 35),
+             top_annotation = HeatmapAnnotation(ID = IDs, 
+                                col = list(ID = c("YN" = "royalblue1", "YC" = "blue", "ON" = "tomato", "OC" = "red")),
+                                                annotation_legend_param = list(ID = list(
+                                                  grid_height = unit(5, "cm"), 
+                                                  title = "Group ID",
+                                                  title_gp = gpar(fontsize = 20, fontface = "bold"),
+                                                  labels_gp = gpar(fontsize = 20),
+                                                  title_position = "lefttop-rot")),
+                                                annotation_name_gp= gpar(fontsize = 30), show_annotation_name = FALSE
+                                                  ), 
+             column_split = 4, column_gap = unit(2.5, "mm"), row_gap = unit(2, "mm"), km = 10, row_km_repeats = 1000, 
+             heatmap_legend_param = list(legend_height = unit(15, "cm"), 
+                                         title = "Motif Accessibility",
+                                         title_position = "lefttop-rot",
+                                         labels_gp = gpar(fontsize = 20),
+                                         title_gp = gpar(fontsize = 20, fontface = "bold")
+                                         #labels = c("very low", "low", "medium", "high")
+                                         )
+             
+             # annotation_legend_param = list(legend_height = unit(15, "cm"),
+             #                                title = "Group")
+)
+region_ht = draw(region_ht)
+dev.off()
+b=row_order(region_ht)
+
+```
+
+```{r}
+#Motif activity heatmap by Cluster
+Cluster = "OLG"
+
+#Motif activity heatmap
+DS = subset(Multiome, downsample = 150)
+IDs = Idents(DS) 
+DefaultAssay(DS) = "chromvar"
+
+matrix =  t(scale(t(DS@assays$chromvar@data)))
+#Remove celll with NAs
+missing = which(is.na(matrix), arr.ind=TRUE)
+if(nrow(missing) > 0){
+  matrix = matrix[, -unique(missing[,2])]
+  IDs = IDs[-unique(missing[,2])]
+}
+
+
+# what's the value range in the matrix
+quantiles = quantile(matrix, c(0.0001, 0.9999))
+## make the black color map to 0. the yellow map to highest and the purle map to the lowest
+col_fun = circlize::colorRamp2(c(quantiles[1], 0, quantiles[2]), c("#FF00FF", "black", "#FFFF00"))
+ClusterCols = ggprism::prism_colour_pal(palette = "colorblind_safe")(length(unique(Idents(Multiome))))
+
+png(file=paste0(clusters,Cluster, "/plots/chromvar_HeatmapCluster.png"), width = 1050, height = 1250)
+dend2 = cluster_within_group(matrix, IDs)
+region_ht = Heatmap(matrix, cluster_columns = dend2, col = col_fun, row_names_gp = gpar(fontsize = 12.5),show_row_names = FALSE, show_column_names = FALSE, row_title = "TF Motif Accessibility", column_title = "TF Motif Accessibility by Age and Memory State", column_title_gp = gpar(fontsize = 35),
+             top_annotation = HeatmapAnnotation(ID = IDs, 
+                                                 col = list(clusters = purrr::map_chr(setNames(c(1:length(unique(Idents(Multiome)))), unique(Idents(Multiome))), 
+                                                                      \(ClustNum) ClusterCols[ClustNum])),
+                                                annotation_legend_param = list(ID = list(
+                                                  grid_height = unit(5, "cm"), 
+                                                  title = "Cluster",
+                                                  title_gp = gpar(fontsize = 20, fontface = "bold"),
+                                                  labels_gp = gpar(fontsize = 20),
+                                                  title_position = "lefttop-rot")),
+                                                annotation_name_gp= gpar(fontsize = 30), show_annotation_name = FALSE
+                                                  ), 
+             column_split = length(unique(Idents(Multiome))), column_gap = unit(2.5, "mm"), row_gap = unit(2, "mm"), km = 10, row_km_repeats = 1000, 
+             heatmap_legend_param = list(legend_height = unit(15, "cm"), 
+                                         title = "Motif Accessibility",
+                                         title_position = "lefttop-rot",
+                                         labels_gp = gpar(fontsize = 20),
+                                         title_gp = gpar(fontsize = 20, fontface = "bold")
+                                         #labels = c("very low", "low", "medium", "high")
+                                         )
+             
+             # annotation_legend_param = list(legend_height = unit(15, "cm"),
+             #                                title = "Group")
+)
+region_ht = draw(region_ht)
+dev.off()
+c=row_order(region_ht)
+```
+
+###Cluster Diff Exp
+```{r}
+
+Cluster = "OLG"
+
+#Multiome = readRDS(paste0(clusters, Cluster, "/objects/Multiome.rds"))
+
+###Load GeneSets
+load(paste0(objects, "/geneSets/GOterms.rds"))
+
+plan("sequential")
+Results = DoIntegratedAnalysis(MULTIobj = Multiome, MULTIcontrasts = "Clusters", Genesets = GOterms, geneThreshold = 0.01, regionThreshold = 0.05, save_to = file.path(clusters,Cluster, "/clusters/"), DARthresh = list(0.1, 0.5), replicate_column = "ID", pseudobulk = F, addMotifs = F, ResultsTable = FALSE, Link = FALSE, AssessDiffPeaks = F)
+```
+
+###Group Diff Acc + Exp
+```{r}
+Cluster = "OLG"
+Multiome = readRDS(paste0(clusters, Cluster, "/objects/Multiome.rds"))
+load(paste0(objects, "/geneSets/GOterms.rds"))
+
+Results = DoIntegratedAnalysis(MULTIobj = Multiome, Factor = "ID", MULTIcontrasts = c("GroupON-GroupYN", "GroupYC-GroupYN", "GroupOC-GroupON", "(GroupYC-GroupYN)-(GroupOC-GroupON)"), Genesets = GOterms, geneThreshold = 0.01, regionThreshold = 0.05, save_to = paste0(clusters,Cluster, "/"), DARthresh = list(0.05, 0.3), contrast_names = c("OLG_Age", "OLG_CFCyoung", "OLG_CFCold", "OLG_CFC*Age"), ResultsTable = FALSE, addMotifs = F)
+```
+
+###DAO Diff Acc + Exp
+```{r}
+
+Cluster = "OLG"
+Multiome = readRDS(paste0(clusters, Cluster, "/objects/Multiome.rds"))
+load(paste0(objects, "/geneSets/GOterms.rds"))
+
+DAO_results = DoIntegratedAnalysis(MULTIobj = Multiome, MULTIcontrasts = "GroupDAO-GroupNo", Factor = "DAO", contrastNames = "DAO",Genesets = GOterms, DEGthreshold = 0.025, DARthreshold = 0.05, save_to = file.path(clusters,Cluster, "/"), DARthresh = list(0.05, 0.3), pseudobulk = F, addMotifs = F, ResultsTable = FALSE, CollapsePathways=T)
+```
+
+Now let's analyse OPCs in more detail
+```{r}
+###--------------------Analysis of Oligos
+Cluster = "OPC"
+
+#Multiome = readRDS(paste0(objects, "Multiome.rds"))
+Multiome = subset(Multiome, idents  = c("OPCs", "dOPCs"))
+gc()
+
+###Make Directories
+dir.create(file.path(clusters, Cluster), showWarnings = FALSE)
+dir.create(file.path(clusters, Cluster, "/objects/"), showWarnings = FALSE)
+dir.create(file.path(clusters, Cluster, "/plots/"), showWarnings = FALSE)
+dir.create(file.path(clusters, Cluster, "/DifferentialAccessibility/"), showWarnings = FALSE)
+dir.create(file.path(clusters, Cluster, "/DifferentialExpression/"), showWarnings = FALSE)
+
+###Normalise and run PCA on RNA data, remove MT, RB, and CC genes before PCA as these may not be useful to distibuish cell states
+Multiome[["RNA"]]$data = shifted_log_transform(Multiome[["RNA"]]$counts, pseudo_count = 1, size_factors = "deconvolution")
+
+#Find deviant genes
+Multiome.sce = as.SingleCellExperiment(Multiome)
+Multiome.sce = scry::devianceFeatureSelection(Multiome.sce, assay="counts", sorted=TRUE)
+#Plot to see how many genes show informative deviance
+ggplot(as.data.frame(rowData(Multiome.sce)), aes(x=as.numeric(1:nrow(rowData(Multiome.sce))), y=binomial_deviance))+
+  geom_line(color="darkblue") + xlab("ranked genes") + ggprism::theme_prism() + geom_vline(xintercept=2000)
+#Set deviant genes as variable features
+VariableFeatures(Multiome) = row.names(rowData(Multiome.sce))[c(1:2000)]
+rm(Multiome.sce)
+#Remove mito and rb genes from these, as they are likely uninformative
+load(paste0(objects, "geneSets/MT_RB_CC.Multiome.rds"))
+VariableFeatures(Multiome) = VariableFeatures(Multiome)[!VariableFeatures(Multiome) %in% c( MT, RB)]
+
+#Scale and run PCA
+Multiome = ScaleData(Multiome, vars.to.regress = "logUMI")
+Multiome = RunPCA(Multiome)
+ElbowPlot(Multiome, ndims = 50)
+```
+
+```{r}
+Cluster = "OPC"
+
+Multiome <- RunUMAP(Multiome, dims=1:6)
+Multiome = FindNeighbors(Multiome,dims = 1:6)
+DimPlot(Multiome, label = TRUE)
+
+DotPlot(Multiome, features = c("Pdgfra","Bcas1", "Gpr17", "Gpr37","Synpr","Man1a", "Sox2", "Mbp", "Plp1"), assay = "RNA", scale.min = 0, dot.scale = 13)  + viridis::scale_color_viridis(option="D") 
+saveRDS(Multiome,  file = paste0(clusters,Cluster, "/objects/Multiome.rds"))
+```
+
+```{r}
+Cluster = "OPC"
+
+Multiome$Age = factor(ifelse(grepl("^Y", Multiome$ID), "Young", "Aged"), levels = c("Young", "Aged"))
+Multiome$Memory = factor(ifelse(grepl("*N$", Multiome$ID), "Naive", "CFC"), levels = c("Naive", "CFC"))
+Multiome$ID = factor(Multiome$ID, levels = c("YN", "YC", "ON", "OC"))
+
+pt <- table(Idents(Multiome), Multiome$Age)
+pt <- as.data.frame(pt)
+
+color_list <- ggplotColours(n=length(unique(Multiome$consensusClust)))
+
+ggplot(pt, aes(x = Var2, y = Freq, fill = Var1)) +
+  theme_bw(base_size = 15) +
+  geom_col(position = "fill", width = 0.5) +
+  xlab("Sample") +
+  ylab("Proportion") +
+  scale_fill_manual(values = color_list) +
+  guides(fill=guide_legend(title="Cluster")) + xlab("Months of Age") +
+  theme(text = element_text(size =25)) + theme(legend.position="top", legend.text = element_text(size = 16), legend.title = element_text(size=16)) + theme(legend.key.size = unit(1,"line"))
+ggsave(paste0(clusters ,Cluster,  "/plots/ClustersbyAge.png"), dpi = 600, width = 6, height = 6.5)
+
+pt <- table(Idents(Multiome), Multiome$ID)
+pt <- as.data.frame(pt)
+pt = pt[!pt$Freq == 0,]
+
+ggplot(pt, aes(x = Var2, y = Freq, fill = Var1)) +
+  theme_bw(base_size = 15) +
+  geom_col(position = "fill", width = 0.5) +
+  xlab("Sample") +
+  ylab("Proportion") +
+  scale_fill_manual(values = color_list) +
+  guides(fill=guide_legend(title="Cluster")) + xlab("Sample")  +
+  hrbrthemes::theme_ipsum( axis_title_just = "centre", axis_title_size = 15, base_family = "Arial", subtitle_size = 30) +
+  theme(text = element_text(size =25), legend.position="top", legend.text = element_text(size = 20), legend.title = element_text(size=20),legend.key.size = unit(1,"line"), axis.text = element_text(size = 20), strip.text.x = element_text(size = 20))
+ggsave(paste0(clusters ,Cluster,  "/plots/ClustersbyID.png"), dpi = 600, width = 8.5, height = 6)
+
+#UMAP
+library(patchwork)
+
+p1 = DimPlot(Multiome,  pt.size = 1, label = TRUE, label.size = 6) + theme_void()
+p1 = p1 + NoLegend() 
+
+p2= ggplot(data.frame(x=100, y=100), aes(x=x, y=y)) + geom_point() + xlim(c(0,10)) + ylim(c(0,10)) + theme_classic() + ylab("UMAP 2") + xlab("UMAP 1") + theme(axis.text = element_blank(), axis.ticks = element_blank(), axis.line = element_line(arrow = arrow(angle = 15, length = unit(.5, "cm"), type = "closed")))
+        
+layout = c(
+  area(t=9, l=1, b = 12, r= 4),
+  area(t=1, l=1.5, b = 11.5, r= 11)
+)
+
+p2 + p1 + plot_layout(design = layout)
+
+ggsave(paste0(clusters ,Cluster,  "/plots/UMAP.png"), height = 5, width = 5)
+
+saveRDS(Multiome, file = paste0(clusters, Cluster, "/objects/Multiome.rds"))
+```
+
+###--------------------Call cell-state specific peaks 
+```{r}
+Cluster = "OPC"
+# change the current plan to access parallelisation
+plan("multisession", workers = 10)
+
+Multiome@meta.data$clusters = Idents(Multiome)
+
+###Redo with cell-type peaks
+##Callpeakswithmacs3
+peaks <- CallPeaks(Multiome,
+                   assay="ATAC",
+                   macs2.path="~/anaconda3/bin/macs3",
+                   effective.genome.size = 1.87e9,
+                   group.by = "clusters")
+
+# remove peaks on nonstandard chromosomes and in genomic blacklist regions
+peaks <- keepStandardChromosomes(peaks, pruning.mode = "coarse")
+peaks <- subsetByOverlaps(x = peaks, ranges = blacklist_mm10, invert = TRUE)
+
+# quantify counts in each peak
+macs2_counts <- FeatureMatrix(
+  fragments = Multiome@assays$ATAC@fragments,
+  features = peaks,
+  cells = colnames(Multiome)
+)
+
+# create a new assay using the MACS2 peak set and add it to the Seurat object
+annotation <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79)
+seqlevelsStyle(annotation) <- "UCSC"
+genome(annotation) <- "mm10"
+Multiome[["specific_peaks"]] <- CreateChromatinAssay(
+  counts = macs2_counts,
+  fragments = Multiome@assays$ATAC@fragments,
+  annotation = Multiome@assays$ATAC@annotation,
+  min.cells	= 3
+)
+
+###Export to bed file
+rtracklayer::export.bed(peaks, paste0(clusters,Cluster, "/objects/ConsensusPeaks.bed"))
+plan("sequential")
+
+Multiome[["ATAC"]] = NULL
+
+##Normalise
+Multiome <- FindTopFeatures(Multiome, min.cutoff = 10, assay = "specific_peaks")
+Multiome <- RunTFIDF(Multiome, assay = "specific_peaks")
+Multiome <- RunSVD(Multiome, assay = "specific_peaks")
+
+Multiome$Group = paste0(Multiome$Age,".", Multiome$Memory)
+
+saveRDS(Multiome, file = paste0(clusters,Cluster, "/objects/Multiome.rds"))
+```
+
+Now lets look at how motif accesibility changes between samples and IDs
+```{r}
+Cluster = "OPC"
+
+# Get a list of motif position frequency matrices from the HOCOMOCO database
+pwmList = readRDS(paste0(objects, "motifs/motifPWMlist.rds"))
+      
+# add motif information
+Multiome <- Signac::AddMotifs(
+  object = Multiome,
+  genome = BSgenome.Mmusculus.UCSC.mm10::BSgenome.Mmusculus.UCSC.mm10,
+  pfm = pwmList,
+  assay = "specific_peaks"
+)
+      
+Multiome <- Signac::RunChromVAR(
+  object = Multiome,
+  assay = "specific_peaks",
+  genome = BSgenome.Mmusculus.UCSC.mm10::BSgenome.Mmusculus.UCSC.mm10
+)
+
+saveRDS(Multiome, file = paste0(clusters,Cluster, "/objects/Multiome.rds"))
+```
+
+```{r}
+#Motif activity heatmap by ID
+Cluster = "OPC"
+
+#Motif activity heatmap
+Multiome$clusters = Idents(Multiome)
+Idents(Multiome) = "ID"
+DS = subset(Multiome, downsample = 50)
+Idents(Multiome) = "clusters"
+IDs = factor(DS$ID, levels = c("YN", "YC", "ON", "OC"))
+DefaultAssay(DS) = "chromvar"
+
+matrix =  t(scale(t(DS@assays$chromvar@data)))
+#Remove celll with NAs
+missing = which(is.na(matrix), arr.ind=TRUE)
+if(nrow(missing) > 0){
+  matrix = matrix[, -unique(missing[,2])]
+  IDs = IDs[-unique(missing[,2])]
+}
+
+
+# what's the value range in the matrix
+quantiles = quantile(matrix, c(0.0001, 0.9999))
+## make the black color map to 0. the yellow map to highest and the purle map to the lowest
+col_fun = circlize::colorRamp2(c(quantiles[1], 0, quantiles[2]), c("#FF00FF", "black", "#FFFF00"))
+
+png(file=paste0(clusters,Cluster, "/plots/chromvar_HeatmapID.png"), width = 1050, height = 1250)
+dend2 = cluster_within_group(matrix, IDs)
+region_ht = Heatmap(matrix, cluster_columns = dend2, col = col_fun, row_names_gp = gpar(fontsize = 12.5),show_row_names = FALSE, show_column_names = FALSE, row_title = "TF Motif Accessibility", column_title = "TF Motif Accessibility by Age and Memory State", column_title_gp = gpar(fontsize = 35),
+             top_annotation = HeatmapAnnotation(ID = IDs, 
+                                col = list(ID = c("YN" = "royalblue1", "YC" = "blue", "ON" = "tomato", "OC" = "red")),
+                                                annotation_legend_param = list(ID = list(
+                                                  grid_height = unit(5, "cm"), 
+                                                  title = "Group ID",
+                                                  title_gp = gpar(fontsize = 20, fontface = "bold"),
+                                                  labels_gp = gpar(fontsize = 20),
+                                                  title_position = "lefttop-rot")),
+                                                annotation_name_gp= gpar(fontsize = 30), show_annotation_name = FALSE
+                                                  ), 
+             column_split = 4, column_gap = unit(2.5, "mm"), row_gap = unit(2, "mm"), km = 10, row_km_repeats = 1000, 
+             heatmap_legend_param = list(legend_height = unit(15, "cm"), 
+                                         title = "Motif Accessibility",
+                                         title_position = "lefttop-rot",
+                                         labels_gp = gpar(fontsize = 20),
+                                         title_gp = gpar(fontsize = 20, fontface = "bold")
+                                         #labels = c("very low", "low", "medium", "high")
+                                         )
+             
+             # annotation_legend_param = list(legend_height = unit(15, "cm"),
+             #                                title = "Group")
+)
+region_ht = draw(region_ht)
+dev.off()
+b=row_order(region_ht)
+```
+
+###Cluster Diff Exp
+```{r}
+Cluster = "OPC"
+
+#Multiome = readRDS(paste0(clusters, Cluster, "/objects/Multiome.rds"))
+
+###Load GeneSets
+load(paste0(objects, "/geneSets/GOterms.rds"))
+
+plan("sequential")
+Results = DoIntegratedAnalysis(MULTIobj = Multiome, MULTIcontrasts = "Clusters", Genesets = GOterms, geneThreshold = 0.01, regionThreshold = 0.05, save_to = file.path(clusters,Cluster, "/clusters/"), DARthresh = list(0.1, 0.5), replicate_column = "ID", pseudobulk = F, addMotifs = F, ResultsTable = FALSE, Link = FALSE, AssessDiffPeaks = F)
+```
+
+###Group Diff Acc + Exp
+```{r}
+Cluster = "OPC"
+load(paste0(objects, "/geneSets/GOterms.rds"))
+
+Results = DoIntegratedAnalysis(MULTIobj = Multiome, Factor = "ID", MULTIcontrasts = c("GroupON-GroupYN", "GroupYC-GroupYN", "GroupOC-GroupON", "(GroupYC-GroupYN)-(GroupOC-GroupON)"), Genesets = GOterms, geneThreshold = 0.01, regionThreshold = 0.05, save_to = paste0(clusters,Cluster, "/"), DARthresh = list(0.05, 0.3), contrastNames = c("OPC_Age", "OPC_CFCyoung", "OPC_CFCold", "OPC_CFC*Age"), ResultsTable = FALSE, addMotifs = F)
+```
+
+###--------------------Analysis of Microglia
+Now let's analyse Microglia in more detail
+
+```{r}
+Cluster = "Microglia"
+
+Multiome = readRDS(paste0(objects, "Multiome.rds"))
+Multiome = subset(Multiome, idents  = c("MG.Hm", "MG.ARM"))
+gc()
+
+###Make Directories
+dir.create(file.path(clusters, Cluster), showWarnings = FALSE)
+dir.create(file.path(clusters, Cluster, "/objects/"), showWarnings = FALSE)
+dir.create(file.path(clusters, Cluster, "/plots/"), showWarnings = FALSE)
+dir.create(file.path(clusters, Cluster, "/DifferentialAccessibility/"), showWarnings = FALSE)
+dir.create(file.path(clusters, Cluster, "/DifferentialExpression/"), showWarnings = FALSE)
+
+###Normalise and run PCA on RNA data, remove MT, RB, and CC genes before PCA as these may not be useful to distibuish cell states
+Multiome[["RNA"]]$data = shifted_log_transform(Multiome[["RNA"]]$counts, pseudo_count = 1, size_factors = "deconvolution")
+
+#Find deviant genes
+Multiome.sce = as.SingleCellExperiment(Multiome)
+Multiome.sce = scry::devianceFeatureSelection(Multiome.sce, assay="counts", sorted=TRUE)
+#Plot to see how many genes show informative deviance
+ggplot(as.data.frame(rowData(Multiome.sce)), aes(x=as.numeric(1:nrow(rowData(Multiome.sce))), y=binomial_deviance))+
+  geom_line(color="darkblue") + xlab("ranked genes") + ggprism::theme_prism() + geom_vline(xintercept=2000)
+#Set deviant genes as variable features
+VariableFeatures(Multiome) = row.names(rowData(Multiome.sce))[c(1:2000)]
+rm(Multiome.sce)
+#Remove mito and rb genes from these, as they are likely uninformative
+load(paste0(objects, "geneSets/MT_RB_CC.Multiome.rds"))
+VariableFeatures(Multiome) = VariableFeatures(Multiome)[!VariableFeatures(Multiome) %in% c( MT, RB)]
+
+#Scale and run PCA
+Multiome = ScaleData(Multiome, vars.to.regress = "nCount_RNA")
+Multiome = RunPCA(Multiome)
+ElbowPlot(Multiome, ndims = 50)
+```
+
+## Initial seurat clustering
+```{r}
+Multiome <- RunUMAP(Multiome, dims=1:5)
+Multiome = FindNeighbors(Multiome,dims = 1:5)
+
+DimPlot(Multiome, label = TRUE)
+DotPlot(Multiome, features = c("Tmem119", "Cx3cr1", "P2ry12", "Cst3", "Trem2", "Tyrobp", "Apoe","Cd74", "Clec7a", "Lgals3", "Ifit3", "Cd163", "Mrc1"), assay = "RNA", scale.min = 0)
+ DotPlot(Multiome, features = c("Abca1", "Abcg1", "Plin2", "Soat1", "Acsl1", "Apoc1", "Lipa", "Npc2", "Nceh1", "Ch25h"), assay = "RNA", scale.min = 0, scale = F)
+
+saveRDS(Multiome, file = paste0(clusters, Cluster, "/objects/Multiome.rds"))
+```
+
+## Visualise Our previous iterative Consensus Clustering
+```{r}
+Cluster = "Microglia"
+Multiome = readRDS(paste0(clusters, Cluster, "/objects/Multiome.rds"))
+
+Idents(Multiome) = Multiome$consensusClust
+new.cluster.ids <- c("Homeostatic","ARM")
+
+names(new.cluster.ids) <- levels(Multiome)
+Multiome <- RenameIdents(Multiome, new.cluster.ids)
+
+Idents(Multiome) = factor(Idents(Multiome), levels = c("Homeostatic","ARM"))
+
+Multiome$Age = factor(ifelse(grepl("^Y", Multiome$ID), "Young", "Aged"), levels = c("Young", "Aged"))
+Multiome$Memory = factor(ifelse(grepl("*N$", Multiome$ID), "Naive", "CFC"), levels = c("Naive", "CFC"))
+Multiome$ID = factor(Multiome$ID, levels = c("YN", "YC", "ON", "OC"))
+
+pt <- table(Idents(Multiome), Multiome$Age)
+pt <- as.data.frame(pt)
+
+color_list <- ggplotColours(n=length(unique(Multiome$consensusClust)))
+
+ggplot(pt, aes(x = Var2, y = Freq, fill = Var1)) +
+  theme_bw(base_size = 15) +
+  geom_col(position = "fill", width = 0.5) +
+  xlab("Sample") +
+  ylab("Proportion") +
+  scale_fill_manual(values = color_list) +
+  guides(fill=guide_legend(title="Cluster")) + xlab("Months of Age") +
+  theme(text = element_text(size =25)) + theme(legend.position="top", legend.text = element_text(size = 16), legend.title = element_text(size=16)) + theme(legend.key.size = unit(1,"line"))
+ggsave(paste0(clusters ,Cluster,  "/plots/ClustersbyAge.png"), dpi = 600, width = 6, height = 6.5)
+
+pt$Var2 = factor(pt$Var2, levels = c("Aged", "Young"))
+ggplot(pt, aes(x = Var2, y = Freq, fill = Var1)) +
+  theme_bw(base_size = 15) +
+  geom_col(position = "fill", width = 0.5) +
+  coord_flip() +
+  xlab("Sample") +
+  ylab("Proportion of Microglia") +
+  ggprism::scale_fill_prism(palette = "colorblind_safe") +
+  guides(fill=guide_legend(title="Cluster")) + xlab(NULL) +
+  theme(text = element_text(size =25)) + theme(legend.position="top", legend.text = element_text(size = 16), legend.title = element_text(size=16)) + theme(legend.key.size = unit(1,"line"))
+ggsave(paste0(clusters ,Cluster,  "/plots/ClustersbyAge_Horizontal.png"), dpi = 600, width = 7, height = 5)
+
+#Again but in orange for presentations
+ggplot(pt, aes(x = Var2, y = Freq, fill = Var1)) +
+  theme_bw(base_size = 15) +
+  geom_col(position = "fill", width = 0.5) +
+  coord_flip() +
+  xlab("Sample") +
+  ylab("Proportion of Microglia") +
+  scale_fill_manual(values=c("lightgrey", "#ED7D31")) +
+  guides(fill=guide_legend(title="Cluster")) + xlab(NULL) +
+  theme(text = element_text(size =25)) + theme(legend.position="top", legend.text = element_text(size = 16), legend.title = element_text(size=16)) + theme(legend.key.size = unit(1,"line"))
+ggsave(paste0(clusters ,Cluster,  "/plots/ClustersbyAge_Horizontal_Orange.png"), dpi = 600, width = 7, height = 5)
+
+ggplot(pt, aes(x = Var2, y = Freq, fill = Var1)) +
+  theme_bw(base_size = 15) +
+  geom_col(position = "fill", width = 0.5) +
+  coord_flip() +
+  xlab("Sample") +
+  ylab("Proportion of Microglia") +
+  scale_fill_manual(values=c("lightgrey", "#46B9DB")) +
+  guides(fill=guide_legend(title="Cluster")) + xlab(NULL) +
+  theme(text = element_text(size =25)) + theme(legend.position="top", legend.text = element_text(size = 16), legend.title = element_text(size=16)) + theme(legend.key.size = unit(1,"line"))
+ggsave(paste0(clusters ,Cluster,  "/plots/ClustersbyAge_Horizontal_blue.png"), dpi = 600, width = 7, height = 5)
+
+pt <- table(Idents(Multiome), Multiome$ID)
+pt <- as.data.frame(pt)
+pt = pt[!pt$Freq == 0,]
+
+ggplot(pt, aes(x = Var2, y = Freq, fill = Var1)) +
+  theme_bw(base_size = 15) +
+  geom_col(position = "fill", width = 0.5) +
+  xlab("Sample") +
+  ylab("Proportion") +
+  #scale_fill_manual(values = color_list) +
+  guides(fill=guide_legend(title="Cluster")) + xlab("Sample")  +
+  hrbrthemes::theme_ipsum( axis_title_just = "centre", axis_title_size = 15, base_family = "Arial", subtitle_size = 30) +
+  theme(text = element_text(size =25), legend.position="top", legend.text = element_text(size = 20), legend.title = element_text(size=20),legend.key.size = unit(1,"line"), axis.text = element_text(size = 20), strip.text.x = element_text(size = 20))
+ggsave(paste0(clusters ,Cluster,  "/plots/ClustersbyID.png"), dpi = 600, width = 8.5, height = 6)
+
+#UMAP
+library(patchwork)
+
+p1 = DimPlot(Multiome,  pt.size = 1, label = TRUE, label.size = 6) + theme_void()
+p1 = p1 + NoLegend() 
+
+p2= ggplot(data.frame(x=100, y=100), aes(x=x, y=y)) + geom_point() + xlim(c(0,10)) + ylim(c(0,10)) + theme_classic() + ylab("UMAP 2") + xlab("UMAP 1") + theme(axis.text = element_blank(), axis.ticks = element_blank(), axis.line = element_line(arrow = arrow(angle = 15, length = unit(.5, "cm"), type = "closed")))
+        
+layout = c(
+  area(t=9, l=1, b = 12, r= 4),
+  area(t=1, l=1.5, b = 11.5, r= 11)
+)
+
+p2 + p1 + plot_layout(design = layout)
+
+ggsave(paste0(clusters ,Cluster,  "/plots/UMAP.png"), height = 5, width = 5)
+
+library(patchwork)
+
+p1 = DimPlot(Multiome,  pt.size = 1, label = TRUE, label.size = 6) + theme_void()  + scale_colour_manual(values=c("lightgrey", "#ED7D31"))
+p1 = p1 + NoLegend() 
+
+p2= ggplot(data.frame(x=100, y=100), aes(x=x, y=y)) + geom_point() + xlim(c(0,10)) + ylim(c(0,10)) + theme_classic() + ylab("UMAP 2") + xlab("UMAP 1") + theme(axis.text = element_blank(), axis.ticks = element_blank(), axis.line = element_line(arrow = arrow(angle = 15, length = unit(.5, "cm"), type = "closed"))) 
+        
+layout = c(
+  area(t=9, l=1, b = 12, r= 4),
+  area(t=1, l=1.5, b = 11.5, r= 11)
+)
+
+p2 + p1 + plot_layout(design = layout)
+
+ggsave(paste0(clusters ,Cluster,  "/plots/UMAP_orange.png"), height = 5, width = 5)
+
+p1 = DimPlot(Multiome,  pt.size = 1, label = TRUE, label.size = 6) + theme_void()  + scale_colour_manual(values=c("lightgrey", "#46B9DB"))
+p1 = p1 + NoLegend() 
+
+p2= ggplot(data.frame(x=100, y=100), aes(x=x, y=y)) + geom_point() + xlim(c(0,10)) + ylim(c(0,10)) + theme_classic() + ylab("UMAP 2") + xlab("UMAP 1") + theme(axis.text = element_blank(), axis.ticks = element_blank(), axis.line = element_line(arrow = arrow(angle = 15, length = unit(.5, "cm"), type = "closed"))) 
+        
+layout = c(
+  area(t=9, l=1, b = 12, r= 4),
+  area(t=1, l=1.5, b = 11.5, r= 11)
+)
+
+p2 + p1 + plot_layout(design = layout)
+
+ggsave(paste0(clusters ,Cluster,  "/plots/UMAP_blue.png"), height = 5, width = 5)
+
+##MG Cluster Markers
+DotPlot(Multiome, features = list( homeostatic = c("Tmem119", "Cx3cr1", "P2ry12"), ARM = c("Apoe","Cd74", "Lgals3")), assay = "RNA", scale.min = 0, dot.scale = 20)  + viridis::scale_color_viridis(option="D") + labs(title="MG Cluster Markers") + xlab("") + ylab("Cluster")  +  theme( legend.key.size = unit(0.75,"line"), legend.position	=c(0.4,1), legend.box	= "horizontal", legend.direction = "horizontal",   legend.box.margin =  margin(t = 0, r = 0, b = 3, l = 0, unit = "cm"), plot.margin =  margin(t = 1.75, unit = "cm"), plot.title = element_text(vjust=12)) 
+ggsave(paste0(clusters, Cluster, "/plots/clusterMarkers.png"), device = "png", width =10, height = 5)
+
+DotPlot(Multiome, features = list( Homeostatic = c("Cx3cr1", "P2ry12"), 'ARM/DAM' = c("Apoe", "Cd74", "Lgals3")), assay = "RNA", scale.min = 0, dot.scale = 20, scale = F) + coord_flip()  + viridis::scale_color_viridis(option="D") + labs(title="Microglia Cluster Markers") + xlab("") + ylab("") + theme_prism()  +  theme( legend.key.size = unit(0.5,"line"), legend.title = element_text(), legend.position = c(0.45,1.2), legend.direction = "horizontal", legend.box	= "verical", legend.spacing.y = unit(-0.5, "cm"), plot.title = element_text(vjust=20), plot.margin =  margin(t = 2.5, unit = "cm")) 
+ggsave(paste0(clusters, Cluster, "/plots/clusterMarkers_vertical.png"), device = "png", width =6, height = 6)
+
+##Lgals3 Only
+DotPlot(Multiome, features = "Lgals3", assay = "RNA", scale.min = 0, dot.scale = 13)  + viridis::scale_color_viridis(option="D") +
+  theme( legend.key.size = unit(0.75,"line"), legend.position	=c(0.4,0.87), legend.box	= "horizontal", legend.direction = "horizontal",   legend.box.margin =  margin(t = 0, r = 0, b = 3, l = 0, unit = "cm"), plot.title = element_text(vjust=7.5)) + xlab("") + ylab("Cluster")  + scCustomize::theme_ggprism_mod()  + labs(title="Lgals3 Expression in MG Clusters")
+ggsave(paste0(clusters, Cluster, "/plots/Lgals3.png"), device = "png", width =6, height = 5)
+
+saveRDS(Multiome, file = paste0(clusters, Cluster, "/objects/Multiome.rds"))
+```
+
+## ARM induction plot
+
+```{r}
+Cluster = "Microglia"
+Multiome = readRDS(paste0(clusters,Cluster, "/objects/Multiome.rds"))
+
+###Induction Plot for ARM
+InductionPlot(Multiome, Var = "ARM", Group = "Age", GroupOrder = c("Young", "Aged"), lineCol = c("Blue")) 
+ggsave(file = paste0(clusters,Cluster, "/plots/ARM_Induction.png"), device = "png", width = 6, height = 6, bg = "White")
+```
+
+###--------------------Call cell-state specific peaks
+
+```{r}
+Cluster = "Microglia"
+# change the current plan to access parallelisation
+plan("multisession", workers = 10)
+
+Multiome@meta.data$clusters = Idents(Multiome)
+
+###Redo with cell-type peaks
+##Callpeakswithmacs3
+peaks <- CallPeaks(Multiome,
+                   assay="ATAC",
+                   macs2.path="~/anaconda3/bin/macs3",
+                   effective.genome.size = 1.87e9,
+                   group.by = "clusters")
+
+# remove peaks on nonstandard chromosomes and in genomic blacklist regions
+peaks <- keepStandardChromosomes(peaks, pruning.mode = "coarse")
+peaks <- subsetByOverlaps(x = peaks, ranges = blacklist_mm10, invert = TRUE)
+
+# quantify counts in each peak
+macs2_counts <- FeatureMatrix(
+  fragments = Multiome@assays$ATAC@fragments,
+  features = peaks,
+  cells = colnames(Multiome)
+)
+
+# create a new assay using the MACS2 peak set and add it to the Seurat object
+Multiome[["specific_peaks"]] <- CreateChromatinAssay(
+  counts = macs2_counts,
+  fragments = Multiome@assays$ATAC@fragments,
+  annotation = Multiome@assays$ATAC@annotation,
+  min.cells	= 3
+)
+
+###Export to bed file
+rtracklayer::export.bed(peaks, paste0(clusters,Cluster, "/objects/consensusPeaks.bed"))
+plan("sequential")
+
+Multiome[["ATAC"]] = NULL
+
+##Normalise
+Multiome <- FindTopFeatures(Multiome, min.cutoff = 10, assay = "specific_peaks")
+Multiome <- RunTFIDF(Multiome, assay = "specific_peaks")
+Multiome <- RunSVD(Multiome, assay = "specific_peaks")
+
+Multiome$Group = paste0(Multiome$Age,".", Multiome$Memory)
+
+saveRDS(Multiome, file = paste0(clusters,Cluster, "/objects/Multiome.rds"))
+```
+
+## Add motifs
+```{r}
+# Get a list of motif position frequency matrices from the HOCOMOCO database
+pwmList = readRDS(paste0(objects, "motifs/motifPWMlist.rds"))
+      
+# add motif information
+Multiome <- Signac::AddMotifs(
+  object = Multiome,
+  genome = BSgenome.Mmusculus.UCSC.mm10::BSgenome.Mmusculus.UCSC.mm10,
+  pfm = pwmList,
+  assay = "specific_peaks"
+)
+      
+Multiome <- Signac::RunChromVAR(
+  object = Multiome,
+  assay = "specific_peaks",
+  genome = BSgenome.Mmusculus.UCSC.mm10::BSgenome.Mmusculus.UCSC.mm10
+)
+
+saveRDS(Multiome, file = paste0(clusters,Cluster, "/objects/Multiome.rds"))
+```
+
+###Cluster Diff Exp
+```{r}
+Cluster = "Microglia"
+Multiome = readRDS(paste0(clusters, Cluster, "/objects/Multiome.rds"))
+
+###Load GeneSets
+load(paste0(objects, "/geneSets/GOterms.rds"))
+GOterms[["cholesterol metabolism"]] = c("Apoe","Cd36", "Plin2", "Soat1", "Acsl1", "Apoc1", "Lipa", "Npc2", "Nceh1", "Ch25h", "Abca1", "Abcg1", "Eepd1", "Spg11")
+Results = DoIntegratedAnalysis(MULTIobj = Multiome, MULTIcontrasts = "Clusters", Genesets = GOterms, geneThreshold = 0.01, regionThreshold = 0.05, save_to = file.path(clusters,Cluster, "/clusters/"), DARthresh = list(0.1, 0.3), pseudobulk = F, addMotifs = F, ResultsTable = FALSE, Link = FALSE, AssessDiffPeaks = F, minGenesetSize=5, maxGenesetSize=500)
+```
+
+## GSEA ridgeplots
+```{r}
+library(ggtext)
+library(glue)
+source("../../../../../apps/EasyMultiome/R/Plotting.R")
+ridgeplot.gseaResult(Results[["ARM"]][["GSEA"]], showCategory = c("defense response", "innate immune response", "response to cytokine", "pattern recognition receptor signaling pathway", "cholesterol metabolism","cholesterol efflux", "response to type II interferon", "positive regulation of cytokine production", "response to lipid", "phagocytosis", "interleukin-1 beta production"), title = "GO Term Dysregulation in ARM vs Homeostatic Microglia",
+                     xhighlight = "cholesterol metabolism|cholesterol efflux|response to lipid", xhighlight_col = "#46B9DB") +
+  theme(plot.title = element_text(hjust = 1), legend.justification = 2)
+ggsave(file = paste0(clusters,Cluster,"/clusters/plots/ARM_GSEA_RidgePlot.jpg"), device = "jpeg", width = 9.5, dpi = 600, height = 7.5, bg = "white")
+
+ridgeplot.gseaResult(Results[["ARM"]][["GSEA"]], showCategory = c("defense response", "innate immune response", "response to cytokine", "pattern recognition receptor signaling pathway", "cholesterol metabolism","cholesterol efflux", "response to type II interferon", "positive regulation of cytokine production", "response to lipid", "phagocytosis", "interleukin-1 beta production"), title = "GO Term Dysregulation in ARM vs Homeostatic Microglia",
+                     xhighlight = "cholesterol metabolism|cholesterol efflux|response to lipid", xhighlight_col = "#ED7D31") +
+  theme(plot.title = element_text(hjust = 1), legend.justification = 2)
+ggsave(file = paste0(clusters,Cluster,"/clusters/plots/ARM_GSEA_RidgePlot_orange.jpg"), device = "jpeg", width = 9.5, dpi = 600, height = 7.5, bg = "white")
+
+#VolcanoPlot of Cholesterol Metabolism GeneSet
+volcanoplot(Results[["ARM"]][["diffExp"]], 0, 1, padj = "fdr", Genes = GOterms[["cholesterol metabolism"]], GenesetName = "Cholesterol Metabolism Genes", num.overlaps=30) + ggtitle("Cholesterol Metabolism Geneset (p.adj=0.0019)") + ylim(NA, 10) + xlim(-2.25, 2.25)  + theme(legend.position = "none")
+ggsave(file = paste0(clusters,Cluster,"/clusters/plots/ARM_cholesterol_volcano.jpg"), device = "jpeg", width = 10, dpi = 300, height = 7.5, bg = "white")
+```
+
+###Group Diff Acc + Exp
+```{r}
+Cluster = "Microglia"
+Multiome = readRDS(paste0(clusters, Cluster, "/objects/Multiome.rds"))
+load(paste0(objects, "/geneSets/GOterms.rds"))
+
+#Set parallel future
+
+Results = DoIntegratedAnalysis(MULTIobj = Multiome, Factor = "ID", MULTIcontrasts = c("GroupON-GroupYN", "GroupYC-GroupYN", "GroupOC-GroupON", "(GroupYC-GroupYN)-(GroupOC-GroupON)"), Genesets = GOterms, geneThreshold = 0.025, regionThreshold = 0.05, save_to = paste0(clusters,Cluster, "/"), DARthresh = list(0.05, 0.3), contrast_names = c("MG_Age", "MG_CFCyoung", "MG_CFCold", "MG_CFC*Age"), ResultsTable = FALSE, addMotifs = F)
+```
+
+##--------------------Analysis of Pyramidal Neurons
+Now let's analyse pyramidal neurons in more detail
+```{r}
+Cluster = "ExNeu"
+
+Multiome = readRDS(paste0(objects, "Multiome.rds"))
+Multiome = subset(Multiome, idents  = grep("DG|ctx", grep("^ExNeu", unique(Idents(Multiome)), value = T), invert = T, value=T))
+gc()
+
+###Make Directories
+dir.create(file.path(clusters, Cluster), showWarnings = FALSE)
+dir.create(file.path(clusters, Cluster, "/objects/"), showWarnings = FALSE)
+dir.create(file.path(clusters, Cluster, "/plots/"), showWarnings = FALSE)
+dir.create(file.path(clusters, Cluster, "/DifferentialAccessibility/"), showWarnings = FALSE)
+dir.create(file.path(clusters, Cluster, "/DifferentialExpression/"), showWarnings = FALSE)
+
+###Normalise and run PCA on RNA data, remove MT, RB, and CC genes before PCA as these may not be useful to distibuish cell states
+Multiome[["RNA"]]$data = shifted_log_transform(Multiome[["RNA"]]$counts, pseudo_count = 1, size_factors = "deconvolution")
+
+#Find deviant genes
+Multiome.sce = as.SingleCellExperiment(Multiome)
+Multiome.sce = scry::devianceFeatureSelection(Multiome.sce, assay="counts", sorted=TRUE)
+#Plot to see how many genes show informative deviance
+ggplot(as.data.frame(rowData(Multiome.sce)), aes(x=as.numeric(1:nrow(rowData(Multiome.sce))), y=binomial_deviance))+
+  geom_line(color="darkblue") + xlab("ranked genes") + ggprism::theme_prism() + geom_vline(xintercept=2000)
+#Set deviant genes as variable features
+VariableFeatures(Multiome) = row.names(rowData(Multiome.sce))[c(1:2000)]
+rm(Multiome.sce)
+#Remove mito and rb genes from these, as they are likely uninformative
+load(paste0(objects, "geneSets/MT_RB_CC.Multiome.rds"))
+VariableFeatures(Multiome) = VariableFeatures(Multiome)[!VariableFeatures(Multiome) %in% c( MT, RB)]
+
+#Scale and run PCA
+Multiome = ScaleData(Multiome, vars.to.regress = "logUMI")
+Multiome = RunPCA(Multiome)
+ElbowPlot(Multiome, ndims = 50)
+```
+
+## Explore consensus clustering versus known marker genes
+
+```{r}
+Multiome <- RunUMAP(Multiome, dims= 1:11)
+Multiome = FindNeighbors(Multiome,dims = 1:11)
+gc()
+
+DimPlot(Multiome, label = TRUE)
+##Exneu Region Marker gene dotplot (data from embrowski et al., 2016)
+DotPlot(Multiome, features = c("Prox1", #DG Granule cells #Immature DG (Zhou 2023 Nature)
+                               "Pdzd2", #Dor DG GC
+                               "Tox3", #Vent DG GC 
+                               "Neurod1", #Immature DG
+                               "Igfbpl1", #Immature DG
+                               "Sox11", #Immature DG
+                               "Sox5", #Immature DG (Singh 2023 Nat. Comm)
+                               "Cd24a", #Immature DG
+                               "Dcx", #Newly formed (Singh 2023 Nat. Comm)
+                               "Dkk3", #CA Pyramidal
+                               "Lyd", #CA3 Pyramidal dor
+                               "Ptgs2",#CA3 Pyramidal dor
+                               "Cd109",#CA3 Pyramidal dor
+                               "Coch", #CA3 Pyramidal ven
+                               "Calb2", #DG Mossy cells
+                               "Nmb", #DG Mossy cells
+                               "Ache", #DG Mossy cells
+                               "Tm4sf1", #DG Mossy cells
+                               "Ctsc", #CA2 Pyramidal
+                               "Vcan", #CA2 Pyramidal
+                               "Cacng5", #CA2 Pyramidal
+                               "Fibcd1", #CA1 Pyramidal
+                               "Man1a", #CA1 Pyramidal
+                               "Kcnh7", #CA1 Pyramidal dor
+                               "Bcl11b", #CA1 Pyramidal dor (Singh 2023 Nat. Comm)
+                               "Wfs1", #CA1 Pyramidal dor
+                               "Dcn", #CA1 Pyramidal ven (Singh 2023 Nat. Comm)
+                               "Trhr", #CA1 Pyramidal ven
+                               "Grin3a", #CA1 Pyramidal ven
+                               "Dlk1","Tpbg", "Gpc3", "Col5a2", "Fn1", "Cbln4", "Lefty1", "Spink8", "Ly6g6e", #Subiculum submarkers (Cembrowski et al., 208)
+                               "Syt17", #Superficial layer (Singh 2023 Nat. Comm)
+                               "Nr4a2", #Deep layer (Singh 2023 Nat. Comm)
+                               "Htr2c", #Serotonergic (Singh 2023 Nat. Comm)
+                               "Rgs6", #Migrating (Singh 2023 Nat. Comm) ,
+                               "Nr4a1", "Arc", "Npas4", "Fos" #Potentiated
+                               ), assay = "RNA", group.by = "consensusClust")
+
+DotPlot(Multiome, features = c("Syt1","Snap25", "Slc17a7","Gad1","Rbms3","Aqp4","Gja1", "Tmem119", "Cx3cr1",  "Mbp", "Plp1","Bcas1","Pdgfra","Htr2c","Cldn5", "Flt1","Ttr", "Dcx", "Reln", "Gfap", "Ascl1", "Gal", "Sox11", "Neurod1"), assay = "RNA", group.by = "consensusClust")
+
+FeaturePlot(Multiome, features = "nCount_RNA")
+
+saveRDS(Multiome,  file = paste0(clusters,Cluster, "/objects/Multiome.rds"))
+```
+
+## Cluster plots
+
+```{r}
+Multiome$Age = factor(ifelse(grepl("^Y", Multiome$ID), "Young", "Aged"), levels = c("Young", "Aged"))
+Multiome$Memory = factor(ifelse(grepl("*N$", Multiome$ID), "Naive", "CFC"), levels = c("Naive", "CFC"))
+Multiome$ID = factor(Multiome$ID, levels = c("YN", "YC", "ON", "OC"))
+
+pt <- table(Idents(Multiome), Multiome$Age)
+pt <- as.data.frame(pt)
+
+color_list <- ggplotColours(n=length(unique(Multiome$consensusClust)))
+
+ggplot(pt, aes(x = Var2, y = Freq, fill = Var1)) +
+  theme_bw(base_size = 15) +
+  geom_col(position = "fill", width = 0.5) +
+  xlab("Sample") +
+  ylab("Proportion") +
+  scale_fill_manual(values = color_list) +
+  guides(fill=guide_legend(title="Cluster")) + xlab("Months of Age") +
+  theme(text = element_text(size =25)) + theme(legend.position="top", legend.text = element_text(size = 16), legend.title = element_text(size=16)) + theme(legend.key.size = unit(1,"line"))
+ggsave(paste0(clusters ,Cluster,  "/plots/ClustersbyAge.png"), dpi = 600, width = 6, height = 6.5)
+
+pt <- table(Idents(Multiome), Multiome$ID)
+pt <- as.data.frame(pt)
+pt = pt[!pt$Freq == 0,]
+
+ggplot(pt, aes(x = Var2, y = Freq, fill = Var1)) +
+  theme_bw(base_size = 15) +
+  geom_col(position = "fill", width = 0.5) +
+  xlab("Sample") +
+  ylab("Proportion") +
+  #scale_fill_manual(values = color_list) +
+  guides(fill=guide_legend(title="Cluster")) + xlab("Sample")  +
+  hrbrthemes::theme_ipsum( axis_title_just = "centre", axis_title_size = 15, base_family = "Arial", subtitle_size = 30) +
+  theme(text = element_text(size =25), legend.position="top", legend.text = element_text(size = 20), legend.title = element_text(size=20),legend.key.size = unit(1,"line"), axis.text = element_text(size = 20), strip.text.x = element_text(size = 20))
+ggsave(paste0(clusters ,Cluster,  "/plots/ClustersbyID.png"), dpi = 600, width = 8.5, height = 6)
+
+#UMAP
+library(patchwork)
+
+p1 = DimPlot(Multiome,  pt.size = 1, label = TRUE, label.size = 6) + theme_void()
+p1 = p1 + NoLegend() 
+
+p2= ggplot(data.frame(x=100, y=100), aes(x=x, y=y)) + geom_point() + xlim(c(0,10)) + ylim(c(0,10)) + theme_classic() + ylab("UMAP 2") + xlab("UMAP 1") + theme(axis.text = element_blank(), axis.ticks = element_blank(), axis.line = element_line(arrow = arrow(angle = 15, length = unit(.5, "cm"), type = "closed")))
+        
+layout = c(
+  area(t=9, l=1, b = 12, r= 4),
+  area(t=1, l=1.5, b = 11.5, r= 11)
+)
+
+p2 + p1 + plot_layout(design = layout)
+
+ggsave(paste0(clusters ,Cluster,  "/plots/UMAP.png"), height = 10, width = 10)
+saveRDS(Multiome, file = paste0(clusters, Cluster, "/objects/Multiome.rds"))
+```
+
+###--------------------Call cell-state specific peaks 
+
+```{r}
+Cluster = "ExNeu"
+# change the current plan to access parallelisation
+plan("multisession", workers = 10)
+
+Multiome@meta.data$clusters = Idents(Multiome)
+
+###Redo with cell-type peaks
+##Callpeakswithmacs3
+peaks <- CallPeaks(Multiome,
+                   assay="ATAC",
+                   macs2.path="~/anaconda3/bin/macs3",
+                   effective.genome.size = 1.87e9,
+                   group.by = "clusters")
+
+# remove peaks on nonstandard chromosomes and in genomic blacklist regions
+peaks <- keepStandardChromosomes(peaks, pruning.mode = "coarse")
+peaks <- subsetByOverlaps(x = peaks, ranges = blacklist_mm10, invert = TRUE)
+
+# quantify counts in each peak
+macs2_counts <- FeatureMatrix(
+  fragments = Multiome@assays$ATAC@fragments,
+  features = peaks,
+  cells = colnames(Multiome)
+)
+
+# create a new assay using the MACS2 peak set and add it to the Seurat object
+annotation <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79)
+seqlevelsStyle(annotation) <- "UCSC"
+genome(annotation) <- "mm10"
+Multiome[["specific_peaks"]] <- CreateChromatinAssay(
+  counts = macs2_counts,
+  fragments = Multiome@assays$ATAC@fragments,
+  annotation = Multiome@assays$ATAC@annotation,
+  min.cells	= 3
+)
+
+###Export to bed file
+rtracklayer::export.bed(peaks, paste0(clusters,Cluster, "/objects/ConsensusPeaks.bed"))
+plan("sequential")
+
+Multiome[["ATAC"]] = NULL
+
+##Normalise
+Multiome <- FindTopFeatures(Multiome, min.cutoff = 10, assay = "specific_peaks")
+Multiome <- RunTFIDF(Multiome, assay = "specific_peaks")
+Multiome <- RunSVD(Multiome, assay = "specific_peaks")
+
+Multiome$Group = paste0(Multiome$Age,".", Multiome$Memory)
+
+saveRDS(Multiome, file = paste0(clusters,Cluster, "/objects/Multiome.rds"))
+```
+
+## Now lets look at how motif accesibility changes between samples and IDs
+```{r}
+# Get a list of motif position frequency matrices from the HOCOMOCO database
+pwmList = readRDS(paste0(objects, "motifs/motifPWMlist.rds"))
+      
+# add motif information
+Multiome <- Signac::AddMotifs(
+  object = Multiome,
+  genome = BSgenome.Mmusculus.UCSC.mm10::BSgenome.Mmusculus.UCSC.mm10,
+  pfm = pwmList,
+  assay = "specific_peaks"
+)
+      
+Multiome <- Signac::RunChromVAR(
+  object = Multiome,
+  assay = "specific_peaks",
+  genome = BSgenome.Mmusculus.UCSC.mm10::BSgenome.Mmusculus.UCSC.mm10
+)
+
+saveRDS(Multiome, file = paste0(clusters,Cluster, "/objects/Multiome.rds"))
+```
+
+# Motif activity heatmap by ID
+
+```{r}
+#Motif activity heatmap
+Multiome$clusters = Idents(Multiome)
+Idents(Multiome) = "ID"
+DS = subset(Multiome, downsample = 150)
+Idents(Multiome) = "clusters"
+IDs = factor(DS$ID, levels = c("YN", "YC", "ON", "OC"))
+DefaultAssay(DS) = "chromvar"
+
+matrix =  t(scale(t(DS@assays$chromvar@data)))
+#Remove celll with NAs
+missing = which(is.na(matrix), arr.ind=TRUE)
+if(nrow(missing) > 0){
+  matrix = matrix[, -unique(missing[,2])]
+  IDs = IDs[-unique(missing[,2])]
+}
+
+# what's the value range in the matrix
+quantiles = quantile(matrix, c(0.0001, 0.9999))
+## make the black color map to 0. the yellow map to highest and the purle map to the lowest
+col_fun = circlize::colorRamp2(c(quantiles[1], 0, quantiles[2]), c("#FF00FF", "black", "#FFFF00"))
+
+#Consensus hierachical clustering
+
+png(file=paste0(clusters,Cluster, "/plots/chromvar_HeatmapID.png"), width = 1050, height = 1250)
+dend2 = cluster_within_group(matrix, IDs)
+region_ht = Heatmap(matrix, cluster_columns = dend2, col = col_fun, row_names_gp = gpar(fontsize = 12.5),show_row_names = FALSE, show_column_names = FALSE, row_title = "TF Motif Accessibility", column_title = "TF Motif Accessibility by Age and Memory State", column_title_gp = gpar(fontsize = 35),
+             top_annotation = HeatmapAnnotation(ID = IDs, 
+                                col = list(ID = c("YN" = "royalblue1", "YC" = "blue", "ON" = "tomato", "OC" = "red")),
+                                                annotation_legend_param = list(ID = list(
+                                                  grid_height = unit(5, "cm"), 
+                                                  title = "Group ID",
+                                                  title_gp = gpar(fontsize = 20, fontface = "bold"),
+                                                  labels_gp = gpar(fontsize = 20),
+                                                  title_position = "lefttop-rot")),
+                                                annotation_name_gp= gpar(fontsize = 30), show_annotation_name = FALSE
+                                                  ), 
+             column_split = 4, column_gap = unit(2.5, "mm"), row_gap = unit(2, "mm"), km = 15, row_km_repeats = 1000, 
+             heatmap_legend_param = list(legend_height = unit(15, "cm"), 
+                                         title = "Motif Accessibility",
+                                         title_position = "lefttop-rot",
+                                         labels_gp = gpar(fontsize = 20),
+                                         title_gp = gpar(fontsize = 20, fontface = "bold")
+                                         #labels = c("very low", "low", "medium", "high")
+                                         )
+             
+             # annotation_legend_param = list(legend_height = unit(15, "cm"),
+             #                                title = "Group")
+)
+region_ht = draw(region_ht)
+dev.off()
+b=row_order(region_ht)
+```
+
+# Motif activity heatmap by Cluster
+
+```{r}
+#Motif activity heatmap
+DS = subset(Multiome, downsample = 150)
+IDs = Idents(DS) 
+DefaultAssay(DS) = "chromvar"
+
+matrix =  t(scale(t(DS@assays$chromvar@data)))
+#Remove celll with NAs
+missing = which(is.na(matrix), arr.ind=TRUE)
+if(nrow(missing) > 0){
+  matrix = matrix[, -unique(missing[,2])]
+  IDs = IDs[-unique(missing[,2])]
+}
+
+
+# what's the value range in the matrix
+quantiles = quantile(matrix, c(0.0001, 0.9999))
+## make the black color map to 0. the yellow map to highest and the purle map to the lowest
+col_fun = circlize::colorRamp2(c(quantiles[1], 0, quantiles[2]), c("#FF00FF", "black", "#FFFF00"))
+ClusterCols = ggprism::prism_colour_pal(palette = "colorblind_safe")(length(unique(Idents(Multiome))))
+
+png(file=paste0(clusters,Cluster, "/plots/chromvar_HeatmapCluster.png"), width = 1050, height = 1250)
+dend2 = cluster_within_group(matrix, IDs)
+region_ht = Heatmap(matrix, cluster_columns = dend2, col = col_fun, row_names_gp = gpar(fontsize = 12.5),show_row_names = FALSE, show_column_names = FALSE, row_title = "TF Motif Accessibility", column_title = "TF Motif Accessibility by Age and Memory State", column_title_gp = gpar(fontsize = 35),
+             top_annotation = HeatmapAnnotation(ID = IDs, 
+                                                 col = list(clusters = purrr::map_chr(setNames(c(1:length(unique(Idents(Multiome)))), unique(Idents(Multiome))), 
+                                                                      \(ClustNum) ClusterCols[ClustNum])),
+                                                annotation_legend_param = list(ID = list(
+                                                  grid_height = unit(5, "cm"), 
+                                                  title = "Cluster",
+                                                  title_gp = gpar(fontsize = 20, fontface = "bold"),
+                                                  labels_gp = gpar(fontsize = 20),
+                                                  title_position = "lefttop-rot")),
+                                                annotation_name_gp= gpar(fontsize = 30), show_annotation_name = FALSE
+                                                  ), 
+             column_split = length(unique(Idents(Multiome))), column_gap = unit(2.5, "mm"), row_gap = unit(2, "mm"), km = 10, row_km_repeats = 1000, 
+             heatmap_legend_param = list(legend_height = unit(15, "cm"), 
+                                         title = "Motif Accessibility",
+                                         title_position = "lefttop-rot",
+                                         labels_gp = gpar(fontsize = 20),
+                                         title_gp = gpar(fontsize = 20, fontface = "bold")
+                                         #labels = c("very low", "low", "medium", "high")
+                                         )
+             
+             # annotation_legend_param = list(legend_height = unit(15, "cm"),
+             #                                title = "Group")
+)
+region_ht = draw(region_ht)
+dev.off()
+c=row_order(region_ht)
+```
+
+```{r}
+bnames = sapply(b, function(x) unlist(Multiome[["specific_peaks"]]@motifs@motif.names[match(rownames(matrix)[unlist(x)],names(Multiome[["specific_peaks"]]@motifs@motif.names))]) ##Get TF names for third cluster
+)
+cnames = sapply(c, function(x) unlist(Multiome[["specific_peaks"]]@motifs@motif.names[match(rownames(matrix)[unlist(x)],names(Multiome[["specific_peaks"]]@motifs@motif.names))]) ##Get TF names for third cluster
+)
+
+DotPlot(Multiome, group.by = "Cluster_ID", features = "Fos", assay = "chromvar", scale.min = 0)
+DotPlot(Multiome, group.by = "Cluster_ID", features = c("Fos", "Arc", "Egr1"), assay = "RNA", scale.min = 0)
+```
+
+## Download some LTP-associated genes to use as a gene-set
+```{bash}
+curl "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5319997/bin/DataSheet1.XLSX" -o "../objects/geneSets/Chen_L-LTPgenes.XLSX"
+```
+
+## Cluster Diff Exp
+
+```{r}
+Cluster = "ExNeu"
+Multiome = readRDS(paste0(clusters,Cluster, "/objects/Multiome.rds"))
+
+###Load GeneSets
+load(paste0(objects, "/geneSets/GOterms.rds"))
+
+Chen_L_LTPgenes <- readxl::read_excel(paste0(objects, "geneSets/Chen_L-LTPgenes.XLSX"), 
+    sheet = "Table S1", skip = 3)
+
+Chen_L_LTPgenes = Chen_L_LTPgenes[order(Chen_L_LTPgenes$log2FC, decreasing = TRUE), ]
+GOterms[["Chen_LTPUP_30'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "30'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+GOterms[["Chen_LTPUP_60'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "60'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+GOterms[["Chen_LTPUP_120'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "120'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+
+Chen_L_LTPgenes = Chen_L_LTPgenes[order(Chen_L_LTPgenes$log2FC, decreasing = FALSE), ]
+GOterms[["Chen_LTPDown_30'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "30'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+GOterms[["Chen_LTPDown_60'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "60'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+GOterms[["Chen_LTPDown_120'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "120'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+
+Idents(Multiome) = gsub("-", "to", Idents(Multiome))
+Results = DoIntegratedAnalysis(MULTIobj = subset(Multiome, idents = unique(Idents(Multiome))[7:10]), MULTIcontrasts = "Clusters", Genesets = GOterms, DEGthreshold = 0.05, DARthreshold = 0.05, save_to = file.path(clusters,Cluster, "/clusters/"), DARthresh = list(0.1, 0.5), replicate_column = "ID", pseudobulk = F, addMotifs = F, ResultsTable = FALSE, Link = FALSE, AssessDiffPeaks = F)
+```
+
+## Group Diff Acc + Exp
+
+```{r}
+Cluster = "ExNeu"
+Multiome = readRDS(paste0(clusters,Cluster, "/objects/Multiome.rds"))
+
+#Remove MT and RB genes from analysis
+load(paste0(objects, "geneSets/MT_RB_CC.Multiome.rds"))
+Multiome@assays$RNA["counts"] = Multiome@assays$RNA["counts"][!rownames(Multiome@assays$RNA["counts"]) %in% c( MT, RB),]
+
+###Load GeneSets
+load(paste0(objects, "/geneSets/GOterms.rds"))
+
+#Add chen LTP genesets
+Chen_L_LTPgenes <- readxl::read_excel(paste0(objects, "geneSets/Chen_L-LTPgenes.XLSX"), 
+    sheet = "Table S1", skip = 3)
+Chen_L_LTPgenes = Chen_L_LTPgenes[order(Chen_L_LTPgenes$log2FC, decreasing = TRUE), ]
+GOterms[["Chen_LTPUP_30'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "30'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+GOterms[["Chen_LTPUP_60'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "60'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+GOterms[["Chen_LTPUP_120'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "120'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+
+Chen_L_LTPgenes = Chen_L_LTPgenes[order(Chen_L_LTPgenes$log2FC, decreasing = FALSE), ]
+GOterms[["Chen_LTPDown_30'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "30'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+GOterms[["Chen_LTPDown_60'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "60'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+GOterms[["Chen_LTPDown_120'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "120'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+
+#Set parallel future
+plan("sequential")
+
+Results = DoIntegratedAnalysis(obj = subset(Multiome, idents = unique(Idents(Multiome))[7:11]), Factor = "ID", MULTIcontrasts = c("GroupON-GroupYN", "GroupYC-GroupYN", "GroupOC-GroupON", "(GroupYC-GroupYN)-(GroupOC-GroupON)"), Genesets = GOterms, geneThreshold = 0.01, regionThreshold = 0.05, save_to = paste0(clusters,Cluster, "/"), DARthresh = list(0.05, 0.3), contrast_names = c("MG_Age", "MG_CFCyoung", "MG_CFCold", "MG_CFC*Age"), ResultsTable = FALSE, addMotifs = F)
+
+rm(Multiome)
+```
+
+## Make some custom ridgeplots and volcanoplots
+```{r}
+##Make custom ridgeplot of GSEA results
+Cluster = "ExNeu"
+library(ggtext)
+library(glue)
+source("../../../../../apps/EasyMultiome/R/Plotting.R")
+
+#CA1.Dor.Pot
+gsea = read.csv(file.path(clusters,Cluster, "/DifferentialExpression/ExNeu.CA1.Dor.Potentiated/YC_GSEA.csv"))
+ranks = read.csv(file.path(clusters,Cluster, "/DifferentialExpression/ExNeu.CA1.Dor.Potentiated/YC_EdgeR.csv"))
+rownames(ranks) = ranks$X
+
+#VolcanoPlot of Chen LTP GeneSet
+volcanoplot(ranks, 0, 1, padj = "fdr", Genes = unlist(strsplit(as.character(gsea[gsea$ID == "Chen_LTPUP_120'",]$core_enrichment), "/")), GenesetName = "CHEN_LTP_UP_120' Leading Edge Genes", num.overlaps=30) + ggtitle("CHEN_LTP_UP_120' Geneset in Young dpCA1 3hr After CFC\n(p.adj=0.012)") + ylim(NA, 3.5) + xlim(-2,2) + theme(legend.position = "none", plot.title = element_text(hjust = 0.5))
+ggsave(file =paste0(clusters,Cluster,"/plots/ExNeu.CA1.Dor.Potentiated/YC_CHEN_LTP_120'_Volcano.jpg"), device = "jpeg", width = 9, dpi = 300, height = 9, bg = "white")
+
+#Plot ridgeplot of GSEA results
+ranks = ranks[order(ranks$logFC, decreasing = T),]
+ranks = setNames(ranks$logFC, ranks$X)
+ridgeplot.FGSEA(gsea, ranks, showCategory = c("cell adhesion",  "neuron projection development", "Chen_LTPUP_120'", "Chen_LTPUP_60'", "regulation of signaling", "translation"), title = "GO Term Differences in Young dpCA1 Neurons 3hr After CFC", 
+                xhighlight = "Chen_LTPUP_120|Chen_LTPUP_60", xhighlight_col = "red") 
+ggsave(file = paste0(clusters,Cluster,"/plots/ExNeu.CA1.Dor.Potentiated/YC_GSEA_RidgePlot.jpg"), device = "jpeg", width = 9, dpi = 600, height = 6, bg = "white")
+
+#CA1.Dor
+gsea = read.csv(file.path(clusters,Cluster, "/DifferentialExpression/ExNeu.CA1.Dor/YC_GSEA.csv"))
+ranks = read.csv(file.path(clusters,Cluster, "/DifferentialExpression/ExNeu.CA1.Dor/YC_EdgeR.csv"))
+ranks = ranks[order(ranks$logFC, decreasing = T),]
+ranks = setNames(ranks$logFC, ranks$X)
+ridgeplot.FGSEA(gsea, ranks, showCategory = c("focal adhesion assembly", "cellular respiration", "translation"), title = "GO Term Differences in Young dCA1 Neurons 3hr After CFC", 
+                xhighlight = "Chen_LTPUP_120|Chen_LTPUP_60", xhighlight_col = "#46B9DB") 
+ggsave(file = paste0(clusters,Cluster,"/plots/ExNeu.CA1.Dor/YC_GSEA_RidgePlot.jpg"), device = "jpeg", width = 9, dpi = 600, height = 6, bg = "white")
+
+#CA1.Sup
+gsea = read.csv(file.path(clusters,Cluster, "/DifferentialExpression/ExNeu.CA1.Sup/YC_GSEA.csv"))
+ranks = read.csv(file.path(clusters,Cluster, "/DifferentialExpression/ExNeu.CA1.Sup/YC_EdgeR.csv"))
+ranks = ranks[order(ranks$logFC, decreasing = T),]
+ranks = setNames(ranks$logFC, ranks$X)
+ridgeplot.FGSEA(gsea, ranks, showCategory = c("cell adhesion",  "neuron projection development", "Chen_LTPUP_120'", "Chen_LTPUP_60'", "synaptic signaling", "behavior", "synapse assembly", "dendrite morphogenesis", "learning or memory", "MAPK cascade", "action potential", "translational elongation", "RNA processing", "translation", "cellular respiration"), title = "GO Term Differences in Young Superficial\nCA1 Neurons 3hr After CFC", 
+                xhighlight = "Chen_LTPUP_120|Chen_LTPUP_60", xhighlight_col = "#46B9DB") 
+ggsave(file = paste0(clusters,Cluster,"/plots/ExNeu.CA1.Sup/YC_GSEA_RidgePlot.jpg"), device = "jpeg", width = 9, dpi = 600, height = 6, bg = "white")
+
+#CA1.Ven
+gsea = read.csv(file.path(clusters,Cluster, "/DifferentialExpression/ExNeu.CA1.Ven/YC_GSEA.csv"))
+ranks = read.csv(file.path(clusters,Cluster, "/DifferentialExpression/ExNeu.CA1.Ven/YC_EdgeR.csv"))
+ranks = ranks[order(ranks$logFC, decreasing = T),]
+ranks = setNames(ranks$logFC, ranks$X)
+ridgeplot.FGSEA(gsea, ranks, showCategory = c("cell adhesion",  "neuron projection development", "Chen_LTPUP_120'", "Chen_LTPUP_60'", "synaptic signaling", "behavior", "synapse assembly", "dendrite morphogenesis", "learning or memory", "MAPK cascade", "action potential", "translational elongation", "RNA processing", "translation", "cellular respiration"), title = "GO Term Differences in Young vCA1 Neurons 3hr After CFC", 
+                xhighlight = "Chen_LTPUP_120|Chen_LTPUP_60", xhighlight_col = "red") 
+ggsave(file = paste0(clusters,Cluster,"/plots/ExNeu.CA1.Ven/YC_GSEA_RidgePlot.jpg"), device = "jpeg", width = 9, dpi = 600, height = 6, bg = "white")
+
+#CA3.Ven
+gsea = read.csv(file.path(clusters,Cluster, "/DifferentialExpression/ExNeu.CA3.Ven/YC_GSEA.csv"))
+ranks = read.csv(file.path(clusters,Cluster, "/DifferentialExpression/ExNeu.CA3.Ven/YC_EdgeR.csv"))
+ranks = ranks[order(ranks$logFC, decreasing = T),]
+ranks = setNames(ranks$logFC, ranks$X)
+ridgeplot.FGSEA(gsea, ranks, showCategory = c("cell adhesion",  "neuron projection development", "Chen_LTPUP_120'", "Chen_LTPUP_60'", "synaptic signaling", "behavior", "synapse assembly", "dendrite morphogenesis", "learning or memory", "MAPK cascade", "action potential", "translational elongation", "RNA processing", "translation", "cellular respiration"), title = "GO Term Differences in Young vCA1 Neurons 3hr After CFC", 
+                xhighlight = "Chen_LTPUP_120|Chen_LTPUP_60", xhighlight_col = "red") 
+ggsave(file = paste0(clusters,Cluster,"/plots/ExNeu.CA3.Ven/YC_GSEA_RidgePlot.jpg"), device = "jpeg", width = 9, dpi = 600, height = 6, bg = "white")
+
+##CA3 Dorsal
+gsea = read.csv(file.path(clusters,Cluster, "/DifferentialExpression/ExNeu.CA3.Dor/YC_GSEA.csv"))
+ranks = read.csv(file.path(clusters,Cluster, "/DifferentialExpression/ExNeu.CA3.Dor/YC_EdgeR.csv"))
+rownames(ranks) = ranks$X
+
+#VolcanoPlot of Chen LTP GeneSet
+volcanoplot(ranks, 0, 1, padj = "fdr", Genes = unlist(strsplit(as.character(gsea[gsea$ID == "Chen_LTPUP_120'",]$core_enrichment), "/")), GenesetName = "CHEN_LTP_UP_120' Leading Edge Genes", num.overlaps=30) + ggtitle("CHEN_LTP_UP_120' Geneset in Young dCA3 3hr After CFC \n(p.adj=0.0004)") + ylim(NA, 1) + xlim(-2,2) + theme(legend.position = "none", plot.title = element_text(hjust = 0.5))
+ggsave(file =paste0(clusters,Cluster,"/plots/ExNeu.CA3.Dor/YC_CHEN_LTP_120'_Volcano.jpg"), device = "jpeg", width = 9, dpi = 300, height = 9, bg = "white")
+
+ranks = ranks[order(ranks$logFC, decreasing = T),]
+ranks = setNames(ranks$logFC, ranks$X)
+ridgeplot.FGSEA(gsea, ranks, showCategory = c("translation", "Chen_LTPUP_120'", "neuron differentiation", "Chen_LTPUP_60'", "cell adhesion", "ribosome biogenesis", "synaptic signaling", "translation", "cellular respiration"), title = "GO Term Differences in Young dCA3 Neurons 3hr After CFC",
+                     xhighlight = "Chen_LTPUP_120|Chen_LTPUP_60", xhighlight_col = "red") +
+  theme(plot.title = element_text(hjust = 1), legend.justification = 0)
+ggsave(file = paste0(clusters,Cluster,"/plots/ExNeu.CA3.Dor/YC_GSEA_Ridgeplot.jpg"), device = "jpeg", width = 9, dpi = 600, height = 6, bg = "white")
+
+##CA2
+gsea = read.csv(file.path(clusters,Cluster, "/DifferentialExpression/ExNeu.CA2/YC_GSEA.csv"))
+ranks = read.csv(file.path(clusters,Cluster, "/DifferentialExpression/ExNeu.CA2/YC_EdgeR.csv"))
+ranks = ranks[order(ranks$logFC, decreasing = T),]
+ranks = setNames(ranks$logFC, ranks$X)
+ridgeplot.FGSEA(gsea, ranks, showCategory = c("translation", "Chen_LTPUP_120'", "neuron differentiation", "Chen_LTPUP_60'", "cell adhesion", "ribosome biogenesis","synapse assembly", "synaptic signaling", "translation", "cellular respiration"), title = "GO Term Differences in Young CA2 Neurons 3hr After CFC",
+                     xhighlight = "Chen_LTPUP_120|Chen_LTPUP_60", xhighlight_col = "#46B9DB") 
+ggsave(file = paste0(clusters,Cluster,"/plots/ExNeu.CA2/YC_GSEA_Ridgeplot.jpg"), device = "jpeg", width = 9, dpi = 600, height = 6, bg = "white")
+
+## Subiculum Post
+gsea = read.csv(file.path(clusters,Cluster, "/DifferentialExpression/ExNeu.Sub.Post/YC_GSEA.csv"))
+ranks = read.csv(file.path(clusters,Cluster, "/DifferentialExpression/ExNeu.Sub.Post/YC_EdgeR.csv"))
+ranks = ranks[order(ranks$logFC, decreasing = T),]
+ranks = setNames(ranks$logFC, ranks$X)
+ridgeplot.FGSEA(gsea, ranks, showCategory = c("translation", "Chen_LTPUP_120'", "neuron differentiation", "Chen_LTPUP_60'", "cell adhesion", "ribosome biogenesis","synapse assembly","synapse organisation","neuron projection morphogenesis", "synaptic signaling", "translation", "cellular respiration"), title = "GO Term Differences in Young\nPostsubiculum Neurons 3hr After CFC",
+                     xhighlight = "Chen_LTPUP_120|Chen_LTPUP_60", xhighlight_col = "#46B9DB") 
+ggsave(file = paste0(clusters,Cluster,"/plots/ExNeu.Sub.Post/YC_GSEA_Ridgeplot.jpg"), device = "jpeg", width = 9, dpi = 600, height = 6, bg = "white")
+
+## Subiculum GPC3
+gsea = read.csv(file.path(clusters,Cluster, "/DifferentialExpression/ExNeu.Sub.Gpc3/YC_GSEA.csv"))
+ranks = read.csv(file.path(clusters,Cluster, "/DifferentialExpression/ExNeu.Sub.Gpc3/YC_EdgeR.csv"))
+ranks = ranks[order(ranks$logFC, decreasing = T),]
+ranks = setNames(ranks$logFC, ranks$X)
+ridgeplot.FGSEA(gsea, ranks, showCategory = c("translation", "Chen_LTPUP_120'", "neuron differentiation", "Chen_LTPUP_60'", "cell adhesion", "ribosome biogenesis","synapse assembly","synapse organisation","neuron projection morphogenesis", "synaptic signaling", "translation", "cellular respiration"), title = "GO Term Differences in Young Gpc3\nSubiculum Neurons 3hr After CFC",
+                     xhighlight = "Chen_LTPUP_120|Chen_LTPUP_60", xhighlight_col = "#46B9DB") 
+ggsave(file = paste0(clusters,Cluster,"/plots/ExNeu.Sub.Gpc3/YC_GSEA_Ridgeplot.jpg"), device = "jpeg", width = 9, dpi = 600, height = 6, bg = "white")
+
+## Subiculum Fn1
+gsea = read.csv(file.path(clusters,Cluster, "/DifferentialExpression/ExNeu.Sub.Fn1/YC_GSEA.csv"))
+ranks = read.csv(file.path(clusters,Cluster, "/DifferentialExpression/ExNeu.Sub.Fn1/YC_EdgeR.csv"))
+ranks = ranks[order(ranks$logFC, decreasing = T),]
+ranks = setNames(ranks$logFC, ranks$X)
+ridgeplot.FGSEA(gsea, ranks, showCategory = c("inorganic anion transport", "signal transduction", "translation", "cellular respiration"), title = "GO Term Differences in Young Fn1\nSubiculum Neurons 3hr After CFC",
+                     xhighlight = "Chen_LTPUP_120|Chen_LTPUP_60", xhighlight_col = "#46B9DB") 
+ggsave(file = paste0(clusters,Cluster,"/plots/ExNeu.Sub.Fn1/YC_GSEA_Ridgeplot.jpg"), device = "jpeg", width = 9, dpi = 600, height = 6, bg = "white")
+
+## Subiculum Sup
+gsea = read.csv(file.path(clusters,Cluster, "/DifferentialExpression/ExNeu.Sub.Sup/YC_GSEA.csv"))
+ranks = read.csv(file.path(clusters,Cluster, "/DifferentialExpression/ExNeu.Sub.Sup/YC_EdgeR.csv"))
+ranks = ranks[order(ranks$logFC, decreasing = T),]
+ranks = setNames(ranks$logFC, ranks$X)
+ridgeplot.FGSEA(gsea, ranks, showCategory = c("signaling", "phosphorylation", "cell junction organization", "glutamate receptor signaling pathway", "translation", "cellular respiration"), title = "GO Term Differences in Young Superficial\nSubiculum Neurons 3hr After CFC",
+                     xhighlight = "Chen_LTPUP_120|Chen_LTPUP_60", xhighlight_col = "#46B9DB") 
+ggsave(file = paste0(clusters,Cluster,"/plots/ExNeu.Sub.Sup/YC_GSEA_Ridgeplot.jpg"), device = "jpeg", width = 9, dpi = 600, height = 6, bg = "white")
+```
+
+
+## As LTP-related genes are the most upregulated with CFC in young, but not old neurons, lets find and characterise the cells highly expressing these genes.
+
+```{r}
+###Assess levels of LTP (ARC/EGR1+ve) Neurons
+Cluster = "ExNeu"
+Multiome = readRDS(paste0(clusters,Cluster, "/objects/Multiome.rds"))
+
+###Define LTP Neurons
+
+###Check thresholds for definition
+LTP_Genes = c("Egr1", "Arc", "Junb", "Npas4", "Rgs4", "Fos", "Egr4", "Dusp6", "Adamts1", "Fosb", "Ciart", "Clk1")
+
+ Multiome = AddModuleScore(
+  Multiome,
+  features = list(LTP_Genes),
+  pool = NULL,
+  nbin = 24,
+  ctrl = 50,
+  k = FALSE,
+  assay = "RNA",
+  name = "LTP",
+  seed = 1,
+  search = FALSE
+)
+
+DotPlot(Multiome, features = "LTP1", scale.min = 0)
+DotPlot(Multiome, features = "LTP1", group.by = "ID", scale.min = 0, scale = FALSE, assay = "RNA")  + viridis::scale_color_viridis() + xlab("Arc Egr1 Fos Fosb Module Score")
+ggsave(file = paste0(clusters, Cluster, "/plots/LTPmarkers_Dotplot.png"), device = "png", width = 6, height = 6)
+Multiome$Cluster_ID = paste0(Idents(Multiome), " ", Multiome$ID)
+DotPlot(Multiome, features = "LTP1", scale.min = 0, scale = FALSE, assay = "RNA", group.by = "Cluster_ID")  + viridis::scale_color_viridis() + xlab("Arc Egr1 Fos Fosb Module Score") + ylab("Cluster")
+
+##Make induction plots
+Multiome$IEGexpressing = InductionPlot(Multiome, Var = LTP_Genes, Group = "Memory", Group2 = "Age", GroupOrder = c("Naive", "CFC"), Group2Order = c("Young", "Aged"), lineCol = c("Blue", "Red"), Thresh = 0.55, Return_Assignments = TRUE, PrintThreshPlot = F) 
+ggsave(file = paste0(clusters,Cluster, "/plots/LTPmarkers_Induction_All.png"), device = "png", width = 10, height = 6, bg = "White")
+
+Multiome$clusters = gsub("ExNeu.", "", Multiome$clusters)
+InductionPlot(Multiome, Var = LTP_Genes, Group = "Memory",Group2 = "Age", ylab = "Proportion of IEG-expressing Neurons", facet = "clusters", xlab = "Memory State", ncol = 4, GroupOrder = c("Naive", "CFC"), Group2Order = c("Young", "Aged"), lineCol = c("Blue", "Red"), Thresh = 0.55,  PrintThreshPlot = F) + theme(plot.margin =margin(r=0.1, unit = "cm"))
+ggsave(file = paste0(clusters,Cluster, "/plots/IEGexpressing_Induction_Clusters.png"), device = "png", width = 12, height = 12, bg = "White")
+
+saveRDS(Multiome, file = paste0(clusters,Cluster, "/objects/Multiome.rds"))
+```
+
+##Calculate Diff Abundance in IEG Expressing Cells
+
+```{r}
+#Conduct GSEA To See Which Sets of Genes are Unusually Highly or Lowly Ranked
+
+###Load GeneSets
+load(paste0(objects, "/geneSets/GOterms.rds"))
+
+Chen_L_LTPgenes <- readxl::read_excel(paste0(objects, "geneSets/Chen_L-LTPgenes.XLSX"), 
+    sheet = "Table S1", skip = 3)
+
+Chen_L_LTPgenes = Chen_L_LTPgenes[order(Chen_L_LTPgenes$log2FC, decreasing = TRUE), ]
+GOterms[["Chen_LTPUP_30'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "30'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+GOterms[["Chen_LTPUP_60'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "60'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+GOterms[["Chen_LTPUP_120'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "120'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+
+Chen_L_LTPgenes = Chen_L_LTPgenes[order(Chen_L_LTPgenes$log2FC, decreasing = FALSE), ]
+GOterms[["Chen_LTPDown_30'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "30'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+GOterms[["Chen_LTPDown_60'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "60'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+GOterms[["Chen_LTPDown_120'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "120'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+
+DefaultAssay(Multiome) = "RNA"
+
+###Don't include genes used to mark these cells
+
+Results = DoIntegratedAnalysis(MULTIobj = subset(Multiome, idents = c("ExNeu.CA3.Dor")), MULTIcontrasts = "GroupVarset-GroupNo", Factor = "IEGexpressing", contrastNames = "IEGexpressing_CA3.Dor",Genesets = GOterms, geneThreshold = 0.025, regionThreshold = 0.05, save_to = file.path(clusters,Cluster, "/clusters/"), DARthresh = list(0.05, 0.3), pseudobulk = F, addMotifs = F, ResultsTable = FALSE, excludeGenesFGSEA = LTP_Genes)
+
+Results = DoIntegratedAnalysis(MULTIobj = subset(Multiome, idents = c("ExNeu.Sub.Sup")), MULTIcontrasts = "GroupVarset-GroupNo", Factor = "IEGexpressing", contrastNames = "IEGexpressing_Sub.Sup",Genesets = GOterms, geneThreshold = 0.025, regionThreshold = 0.05, save_to = file.path(clusters,Cluster, "/clusters/"), DARthresh = list(0.05, 0.3), pseudobulk = F, addMotifs = F, ResultsTable = FALSE, excludeGenesFGSEA = LTP_Genes)
+
+Results = DoIntegratedAnalysis(MULTIobj = subset(Multiome, idents = c("ExNeu.CA1.Dor.Potentiated")), MULTIcontrasts = "GroupVarset-GroupNo", Factor = "IEGexpressing", contrastNames = "IEGexpressing_CA1.Dor.Potentiated",Genesets = GOterms, geneThreshold = 0.025, regionThreshold = 0.05, save_to = file.path(clusters,Cluster, "/clusters/"), DARthresh = list(0.05, 0.3), pseudobulk = F, addMotifs = F, ResultsTable = FALSE, excludeGenesFGSEA = LTP_Genes)
+```
+
+## Make custom ridgeplot of IEG-expressing neuron expression
+
+```{r}
+Cluster = "ExNeu"
+library(ggtext)
+library(glue)
+source("../../../../../apps/EasyMultiome/R/Plotting.R")
+#CA1.Dor.Pot
+gsea = read.csv(file.path(clusters,Cluster, "/clusters/DifferentialExpression/IEGexpressing_CA1.Dor.Potentiated_GSEA.csv"))
+ranks = read.csv(file.path(clusters,Cluster, "/clusters/DifferentialExpression/IEGexpressing_CA1.Dor.Potentiated_EdgeR.csv"))
+rownames(ranks) = ranks$X
+
+#VolcanoPlot 
+volcanoplot(ranks, 1, 0.05, padj = "fdr", num.overlaps=15, labelsize =7) + ggtitle("Gene Expression Differences: \nIEG-Expressing vs other dpCA1 Neurons") + theme_ggprism_mod() + theme(title = element_text(size=17, hjust = 0.5), legend.position = "top", legend.title = element_blank(), legend.text = element_text(size=15))
+ggsave(file =paste0(clusters,Cluster,"/clusters/plots/IEGexpressing_CA1.Dor.Potentiated_Volcano.jpg"), device = "jpeg", width = 10, dpi = 300, height = 10, bg = "white")
+
+#Plot ridgeplot of GSEA results
+ranks = ranks[order(ranks$logFC, decreasing = T),]
+ranks = setNames(ranks$logFC, ranks$X)
+ridgeplot.FGSEA(gsea, ranks, showCategory = c("Chen_LTPUP_120'", "protein phosphorylation", "synaptic transmission, glutamatergic", "learning or memory", "translation at synapse", "cell-cell adhesion", "cognition", "synapse assembly", "signal release", "learning", "memory"), title = "GO Term Differences:  \nIEG-Expressing vs other dpCA1 Neurons",
+                     xhighlight = "Chen_LTPUP_120|Chen_LTPUP_60|memory|learning or memory|cell-cell adhesion", xhighlight_col = "red") + theme(title = element_text(size=17, hjust = 0.1))
+ggsave(file = paste0(clusters,Cluster,"/clusters/plots/IEGexpressingFGSEA_RidgePlot.jpg"), device = "jpeg", width = 9.5, dpi = 600, height = 8, bg = "white")
+```
+
+###--------------------Call cell-state specific peaks 
+
+```{r}
+Cluster = "ExNeu"
+Multiome = readRDS(paste0(clusters,Cluster, "/objects/Multiome.rds"))
+Multiome = subset(Multiome, idents = c("ExNeu.CA1.Dor.Potentiated", "ExNeu.CA1.Dor", "ExNeu.CA1.Ven"))
+
+Cluster = "ExNeu"
+# change the current plan to access parallelisation
+plan("multisession", workers = 10)
+
+Multiome@meta.data$clusters = Idents(Multiome)
+
+###Redo with cell-type peaks
+##Callpeakswithmacs3
+peaks <- CallPeaks(Multiome,
+                   assay="specific_peaks",
+                   macs2.path="~/anaconda3/bin/macs3",
+                   effective.genome.size = 1.87e9,
+                   group.by = "clusters")
+
+# remove peaks on nonstandard chromosomes and in genomic blacklist regions
+peaks <- keepStandardChromosomes(peaks, pruning.mode = "coarse")
+peaks <- subsetByOverlaps(x = peaks, ranges = blacklist_mm10, invert = TRUE)
+
+# quantify counts in each peak
+macs2_counts <- FeatureMatrix(
+  fragments = Multiome@assays$specific_peaks@fragments,
+  features = peaks,
+  cells = colnames(Multiome)
+)
+
+# create a new assay using the MACS2 peak set and add it to the Seurat object
+annotation <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79)
+seqlevelsStyle(annotation) <- "UCSC"
+genome(annotation) <- "mm10"
+Multiome[["specific_peaks"]] <- CreateChromatinAssay(
+  counts = macs2_counts,
+  fragments = Multiome@assays$specific_peaks@fragments,
+  annotation = Multiome@assays$specific_peaks@annotation,
+  min.cells	= 3
+)
+
+###Export to bed file
+dir.create(paste0(clusters,Cluster, "/clusters/objects/"))
+rtracklayer::export.bed(peaks, paste0(clusters,Cluster, "/clusters/objects/ConsensusPeaks.bed"))
+plan("sequential")
+
+##Normalise
+Multiome <- FindTopFeatures(Multiome, min.cutoff = 10, assay = "specific_peaks")
+Multiome <- RunTFIDF(Multiome, assay = "specific_peaks")
+Multiome <- RunSVD(Multiome, assay = "specific_peaks")
+
+Multiome$Group = paste0(Multiome$Age,".", Multiome$Memory)
+
+
+saveRDS(Multiome, file = paste0(clusters,Cluster, "/clusters/objects/CA1.rds"))
+```
+
+## Now lets look at how motif accesibility changes between samples and IDs
+```{r}
+# Get a list of motif position frequency matrices from the HOCOMOCO database
+pwmList = readRDS(paste0(objects, "motifs/motifPWMlist.rds"))
+      
+# add motif information
+Multiome <- Signac::AddMotifs(
+  object = Multiome,
+  genome = BSgenome.Mmusculus.UCSC.mm10::BSgenome.Mmusculus.UCSC.mm10,
+  pfm = pwmList,
+  assay = "specific_peaks"
+)
+      
+Multiome <- Signac::RunChromVAR(
+  object = Multiome,
+  assay = "specific_peaks",
+  genome = BSgenome.Mmusculus.UCSC.mm10::BSgenome.Mmusculus.UCSC.mm10
+)
+
+saveRDS(Multiome, file = paste0(clusters,Cluster, "/clusters/objects/CA1.rds"))
+```
+
+## Save the normalised RNA counts (filtering out lowly expressed genes), get our normalised peak matrix (filtering out lowly abundant peaks and imputing with nmf factorisation and matrix multiplication), and a chromvar object of motif accessibilities per cell, for GRN inference with my custom method
+```{r}
+Multiome = readRDS(paste0(clusters,Cluster, "/clusters/objects/CA1.rds"))
+
+#Get normalised RNA counts for genes expressed above threshold (2.5% of cells by default)
+rnaMatrix = Multiome[["RNA"]]["counts"]
+rnaMatrix = rnaMatrix[Matrix::rowSums(rnaMatrix > 0) > (0.025 * ncol(rnaMatrix)),]
+
+# Get normalised peak matrix for 75000 most variant peaks with counts in > 1% samples
+Multiome <- FindVariableFeatures(Multiome, nfeatures = 75000, assay = "specific_peaks")
+peakCounts = Multiome[["specific_peaks"]]["counts"][rownames(Multiome[["specific_peaks"]]) %in% Multiome[["specific_peaks"]]@var.features,]
+ACCthreshold = 0.01
+peakCounts = peakCounts[Matrix::rowSums(peakCounts > 0) > (ACCthreshold * ncol(peakCounts)),]
+
+peakMatrix = Multiome[["specific_peaks"]]["data"][rownames(Multiome[["specific_peaks"]]) %in% rownames(peakCounts),]
+dimNames = dimnames(peakMatrix)
+accessiblePeaks = rownames(peakMatrix)
+saveRDS(accessiblePeaks, file = "../../PRINT/CA1/accessiblePeaks.rds")
+
+# Make chromvar object
+accessiblePeaks_granges = GenomicRanges::GRanges(seqnames=sapply(strsplit(accessiblePeaks, "-"), `[`, 1),
+                                 ranges=IRanges(start = as.numeric(sapply(strsplit(accessiblePeaks, "-"), `[`, 2)), 
+                                                end = as.numeric(sapply(strsplit(accessiblePeaks, "-"), `[`, 3))))
+
+chromvar.obj = SummarizedExperiment::SummarizedExperiment(
+    assays = list(counts = peakCounts),
+    rowRanges = accessiblePeaks_granges
+  )
+chromvar.obj <- chromVAR::addGCBias(
+    object = chromvar.obj,
+    genome = BSgenome.Mmusculus.UCSC.mm10::BSgenome.Mmusculus.UCSC.mm10
+  )
+
+# Use cross validation to determine correct nmf factorisation rank
+library(RcppML)
+res = RcppML::crossValidate(peakMatrix, k = seq(2, 20, 2), reps = 3, seed = 123, verbose = T, L1=0.01)
+plot(res) #Pick the rank which achieves lowest error
+```
+
+```{r}
+nmf = RcppML::nmf(peakMatrix, k=18, verbose = F, seed = 123, L1=0.01)
+peakMatrix = as(nmf$w %*% nmf$h, "dMatrix")
+dimnames(peakMatrix) = dimNames
+
+#Find deviant genes
+Multiome.sce = as.SingleCellExperiment(Multiome)
+Multiome.sce = scry::devianceFeatureSelection(Multiome.sce, assay="counts", sorted=TRUE)
+#Set deviant genes as variable features
+VariableFeatures(Multiome) = row.names(rowData(Multiome.sce))[c(1:12000)]
+rm(Multiome.sce)
+#Remove mito and rb genes from these, as they are likely uninformative
+load(paste0(objects, "geneSets/MT_RB_CC.Multiome.rds"))
+VariableFeatures(Multiome) = VariableFeatures(Multiome)[!VariableFeatures(Multiome) %in% c( MT, RB)]
+
+#Scale and run PCA
+plan("multisession", workers = 5)
+rnaMatrix = ScaleData(Multiome, vars.to.regress = "logUMI")[["RNA"]]["scale.data"]
+plan("sequential")
+
+# Get metadata
+Meta = Multiome@meta.data
+
+# Extract motif matrix
+MotifMat = GetMotifData(object = Multiome, slot = "data", assay = "specific_peaks") 
+MotifMat = MotifMat[rownames(MotifMat) %in% rownames(chromvar.obj), , drop=FALSE]
+chromvarMat = Multiome@assays$chromvar@data
+#Remove NAs from chromvar
+chromvarMat[is.na(chromvarMat)] = 0
+
+# Get motif deviances
+dev <- chromVAR::computeDeviations(object = chromvar.obj, annotations = MotifMat)
+variability <- chromVAR::computeVariability(dev)
+
+# Get annotations
+annotation = Multiome[["specific_peaks"]]@annotation
+
+# Save data and run prinf footprinting (in PRINT_Footprinting.rmd)
+save(chromvarMat, MotifMat, rnaMatrix, Multiome, peakMatrix, chromvarMat, chromvar.obj, TFnames, dev, variability, GOterms,annotation, file = paste0(clusters,Cluster, "/clusters/objects/regulon.rds"))
+dir.create("../../PRINT/CA1/")
+```
+
+## Now lets focus on CA1 Neurons, as a lot seems to be going on there
+
+```{r}
+Cluster = "ExNeu"
+Multiome = readRDS(paste0(clusters,Cluster, "/objects/Multiome.rds"))
+
+Multiome = subset(Multiome, idents = c("ExNeu.CA1.Dor", "ExNeu.CA1.Ven"))
+
+plan("multisession", workers = 15)
+
+peaks <- CallPeaks(Multiome,
+                   assay="specific_peaks",
+                   macs2.path="~/anaconda3/bin/macs3",
+                   effective.genome.size = 1.87e9,
+                   group.by = "clusters")
+
+# remove peaks on nonstandard chromosomes and in genomic blacklist regions
+peaks <- keepStandardChromosomes(peaks, pruning.mode = "coarse")
+peaks <- subsetByOverlaps(x = peaks, ranges = blacklist_mm10, invert = TRUE)
+
+# quantify counts in each peak
+macs2_counts <- FeatureMatrix(
+  fragments = Multiome@assays$specific_peaks@fragments,
+  features = peaks,
+  cells = colnames(Multiome)
+)
+
+# create a new assay using the MACS2 peak set and add it to the Seurat object
+Multiome[["specific_peaks"]] <- CreateChromatinAssay(
+  counts = macs2_counts,
+  fragments = Multiome@assays$specific_peaks@fragments,
+  annotation = Multiome@assays$specific_peaks@annotation,
+  min.cells	= 3
+)
+
+###Export to bed file
+rtracklayer::export.bed(peaks, paste0(clusters,Cluster, "/objects/ConsensusPeaks.bed"))
+plan("sequential")
+
+Multiome[["specific_peaks"]] = NULL
+
+##Normalise
+Multiome <- FindTopFeatures(Multiome, min.cutoff = 10, assay = "specific_peaks")
+Multiome <- RunTFIDF(Multiome, assay = "specific_peaks")
+Multiome <- RunSVD(Multiome, assay = "specific_peaks")
+
+Multiome$Group = paste0(Multiome$Age,".", Multiome$Memory)
+
+# Get a list of motif position frequency matrices from the HOCOMOCO database
+pwmList = readRDS(paste0(objects, "motifs/motifPWMlist.rds"))
+      
+# add motif information
+Multiome <- Signac::AddMotifs(
+  object = Multiome,
+  genome = BSgenome.Mmusculus.UCSC.mm10::BSgenome.Mmusculus.UCSC.mm10,
+  pfm = pwmList,
+  assay = "specific_peaks"
+)
+      
+Multiome <- Signac::RunChromVAR(
+  object = Multiome,
+  assay = "specific_peaks",
+  genome = BSgenome.Mmusculus.UCSC.mm10::BSgenome.Mmusculus.UCSC.mm10
+)
+
+dir.create(paste0(clusters,Cluster, "/clusters/CA1.Dor/objects/"), recursive = T)
+saveRDS(Multiome, file = paste0(clusters,Cluster, "/clusters/CA1.Dor/objects/Multiome.rds"))
+
+```
+
+```{r}
+Cluster = "ExNeu"
+#Multiome = readRDS(paste0(clusters,Cluster, "/clusters/CA1.Dor/objects/Multiome.rds"))
+
+###Normalise and run PCA on RNA data, remove MT, RB, and CC genes before PCA as these may not be useful to distibuish cell states
+Multiome[["RNA"]]$data = shifted_log_transform(Multiome[["RNA"]]$counts, pseudo_count = 1, size_factors = "deconvolution")
+
+#Find deviant genes
+Multiome.sce = as.SingleCellExperiment(Multiome)
+Multiome.sce = scry::devianceFeatureSelection(Multiome.sce, assay="counts", sorted=TRUE)
+#Plot to see how many genes show informative deviance
+ggplot(as.data.frame(rowData(Multiome.sce)), aes(x=as.numeric(1:nrow(rowData(Multiome.sce))), y=binomial_deviance))+
+  geom_line(color="darkblue") + xlab("ranked genes") + ggprism::theme_prism() + geom_vline(xintercept=2000)
+#Set deviant genes as variable features
+VariableFeatures(Multiome) = row.names(rowData(Multiome.sce))[c(1:2000)]
+rm(Multiome.sce)
+#Remove mito and rb genes from these, as they are likely uninformative
+load(paste0(objects, "geneSets/MT_RB_CC.Multiome.rds"))
+VariableFeatures(Multiome) = VariableFeatures(Multiome)[!VariableFeatures(Multiome) %in% c( MT, RB)]
+
+#Scale and run PCA
+Multiome = ScaleData(Multiome)
+Multiome = RunPCA(Multiome)
+ElbowPlot(Multiome, ndims = 50)
+```
+
+#Motif activity heatmap
+
+```{r}
+Multiome$clusters = Idents(Multiome)
+
+Idents(Multiome) = "ID"
+DS = subset(Multiome, downsample = 150)
+Idents(Multiome) = "clusters"
+IDs = factor(DS$ID, levels = c("YN", "YC", "ON", "OC"))
+DefaultAssay(DS) = "chromvar"
+
+matrix =  t(scale(t(DS@assays$chromvar@data)))
+#Remove celll with NAs
+missing = which(is.na(matrix), arr.ind=TRUE)
+if(nrow(missing) > 0){
+  matrix = matrix[, -unique(missing[,2])]
+  IDs = IDs[-unique(missing[,2])]
+}
+
+# what's the value range in the matrix
+quantiles = quantile(matrix, c(0.0001, 0.9999))
+## make the black color map to 0. the yellow map to highest and the purle map to the lowest
+col_fun = circlize::colorRamp2(c(quantiles[1], 0, quantiles[2]), c("#FF00FF", "black", "#FFFF00"))
+
+#Consensus hierachical clustering
+
+png(file=paste0(clusters,Cluster, "/plots/ExNeu.CA1.Dor/chromvar_HeatmapID.png"), width = 1050, height = 1250)
+dend2 = cluster_within_group(matrix, IDs)
+region_ht = Heatmap(matrix, cluster_columns = dend2, col = col_fun, row_names_gp = gpar(fontsize = 12.5),show_row_names = FALSE, show_column_names = FALSE, row_title = "TF Motif Accessibility", column_title = "TF Motif Accessibility by Age and Memory State", column_title_gp = gpar(fontsize = 35),
+             top_annotation = HeatmapAnnotation(ID = IDs, 
+                                col = list(ID = c("YN" = "royalblue1", "YC" = "blue", "ON" = "tomato", "OC" = "red")),
+                                                annotation_legend_param = list(ID = list(
+                                                  grid_height = unit(5, "cm"), 
+                                                  title = "Group ID",
+                                                  title_gp = gpar(fontsize = 20, fontface = "bold"),
+                                                  labels_gp = gpar(fontsize = 20),
+                                                  title_position = "lefttop-rot")),
+                                                annotation_name_gp= gpar(fontsize = 30), show_annotation_name = FALSE
+                                                  ), 
+             column_split = 4, column_gap = unit(2.5, "mm"), row_gap = unit(2, "mm"), km = 10, row_km_repeats = 1000, 
+             heatmap_legend_param = list(legend_height = unit(15, "cm"), 
+                                         title = "Motif Accessibility",
+                                         title_position = "lefttop-rot",
+                                         labels_gp = gpar(fontsize = 20),
+                                         title_gp = gpar(fontsize = 20, fontface = "bold")
+                                         #labels = c("very low", "low", "medium", "high")
+                                         )
+             
+             # annotation_legend_param = list(legend_height = unit(15, "cm"),
+             #                                title = "Group")
+)
+region_ht = draw(region_ht)
+dev.off()
+b=row_order(region_ht)
+
+bnames = sapply(b, function(x) unlist(Multiome[["specific_peaks"]]@motifs@motif.names[match(rownames(matrix)[unlist(x)],names(Multiome[["specific_peaks"]]@motifs@motif.names))]) ##Get TF names for third cluster
+)
+```
+
+## Recalulate Engram Neurons and export for GRN inference in SCENIC
+```{r}
+###Define LTP Neurons
+
+###Check thresholds for definition
+LTP_Genes = c("Egr1", "Junb", "Arc", "Fos", "Rgs4", "Egr4", "Fosb", "Dusp6", "Nr4a1")
+
+ Multiome = AddModuleScore(
+  Multiome,
+  features = list(LTP_Genes),
+  pool = NULL,
+  nbin = 24,
+  ctrl = 50,
+  k = FALSE,
+  assay = "RNA",
+  name = "LTP",
+  seed = 1,
+  search = FALSE
+)
+
+DotPlot(Multiome, features = "LTP1", scale.min = 0)
+DotPlot(Multiome, features = "LTP1", group.by = "ID", scale.min = 0, scale = FALSE, assay = "RNA")  + viridis::scale_color_viridis() + xlab("Arc Egr1 Fos Fosb Module Score")
+ggsave(file = paste0(clusters, Cluster, "/plots/ExNeu.CA1.Dor/LTPmarkers_Dotplot.png"), device = "png", width = 6, height = 6)
+Multiome$Cluster_ID = paste0(Idents(Multiome), " ", Multiome$ID)
+DotPlot(Multiome, features = "LTP1", scale.min = 0, scale = FALSE, assay = "RNA", group.by = "Cluster_ID")  + viridis::scale_color_viridis() + xlab("Arc Egr1 Fos Fosb Module Score") + ylab("Cluster")
+
+##Make induction plots
+Multiome$IEGexpressing = InductionPlot(Multiome, Var = LTP_Genes, Group = "Memory", Group2 = "Age", GroupOrder = c("Naive", "CFC"), Group2Order = c("Young", "Aged"), lineCol = c("Blue", "Red"), Thresh = 0.45, Return_Assignments = TRUE, PrintThreshPlot = F) 
+ggsave(file = paste0(clusters,Cluster, "/plots/ExNeu.CA1.Dor/LTPmarkers_Induction_All.png"), device = "png", width = 10, height = 6, bg = "White")
+
+Multiome$IEGexpressing = InductionPlot(Multiome, Var = LTP_Genes, Group = "Memory",Group2 = "Age", ylab = "Proportion of IEG-expressing Neurons", facet = "clusters", xlab = "Memory State", ncol = 4, GroupOrder = c("Naive", "CFC"), Group2Order = c("Young", "Aged"), lineCol = c("Blue", "Red"), Thresh = 0.45,  PrintThreshPlot = F,Return_Assignments = TRUE) 
+InductionPlot(Multiome, Var = LTP_Genes, Group = "Memory",Group2 = "Age", ylab = "Proportion of IEG-expressing Neurons", facet = "clusters", xlab = "Memory State", ncol = 4, GroupOrder = c("Naive", "CFC"), Group2Order = c("Young", "Aged"), lineCol = c("Blue", "Red"), Thresh = 0.45,  PrintThreshPlot = F) + theme(plot.margin =margin(r=0.1, unit = "cm"))
+ggsave(file = paste0(clusters,Cluster, "/plots/ExNeu.CA1.Dor/IEGexpressing_Induction_Clusters.png"), device = "png", width = 12, height = 6, bg = "White")
+
+##Define Engram Neurons
+Multiome$Engram = InductionPlot(Multiome, Var = rownames(matrix)[unlist(b['10'])][26:32] , Group = "Memory", Group2 = "Age", ylab = paste0("Proportion of Engram Neurons"), xlab = "Memory State", Thresh = 9.5, Return_Assignments = TRUE, All = T, assay = "chromvar", nbin = 25, ctrl = 30, GroupOrder = c("Naive", "CFC"), Group2Order = c("Young", "Aged"), lineCol = c("Blue", "Red"), ncol = 4, PrintThreshPlot = F, scales = "free_y", facet = "clusters")
+ggsave(file = paste0(clusters,Cluster, "/plots/ExNeu.CA1.Dor/IEGtargetaccessibility_Induction.png"), device = "png", width = 10, height = 6, bg = "White")
+
+table(Multiome$IEGexpressing, Multiome$Engram)
+
+#Conduct DiffExpAnalysis To See Which Sets of Genes are Unusually Highly Expressed by IEG-expressing or accessible cells
+###Load GeneSets
+load(paste0(objects, "/geneSets/GOterms.rds"))
+Chen_L_LTPgenes <- readxl::read_excel(paste0(objects, "geneSets/Chen_L-LTPgenes.XLSX"), 
+    sheet = "Table S1", skip = 3)
+
+Chen_L_LTPgenes = Chen_L_LTPgenes[order(Chen_L_LTPgenes$log2FC, decreasing = TRUE), ]
+GOterms[["Chen_LTPUP_30'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "30'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+GOterms[["Chen_LTPUP_60'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "60'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+GOterms[["Chen_LTPUP_120'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "120'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+
+Chen_L_LTPgenes = Chen_L_LTPgenes[order(Chen_L_LTPgenes$log2FC, decreasing = FALSE), ]
+GOterms[["Chen_LTPDown_30'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "30'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+GOterms[["Chen_LTPDown_60'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "60'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+GOterms[["Chen_LTPDown_120'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "120'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+
+Results = DoIntegratedAnalysis(MULTIobj = subset(Multiome, idents = c("ExNeu.CA1.Dor")), MULTIcontrasts = "GroupVarset-GroupNo", Factor = "Engram", contrastNames = "Engram",Genesets = GOterms, DEGthreshold = 0.025, DARthreshold = 0.05, save_to = file.path(clusters,Cluster, "/clusters/CA1.Dor/"), DARthresh = list(0.05, 0.3), pseudobulk = F, addMotifs = F, ResultsTable = FALSE, CollapsePathways=T)
+
+Results = DoIntegratedAnalysis(MULTIobj = subset(Multiome, idents = c("ExNeu.CA1.Dor")), MULTIcontrasts = "GroupVarset-GroupNo", Factor = "IEGexpressing", contrastNames = "IEGexpressing",Genesets = GOterms, DEGthreshold = 0.025, DARthreshold = 0.05, save_to = file.path(clusters,Cluster, "/clusters/CA1.Dor/"), DARthresh = list(0.05, 0.3), pseudobulk = F, addMotifs = F, ResultsTable = FALSE, CollapsePathways=T)
+
+rtracklayer::export.bed(peaks, paste0(objects, paste0("../../SCENIC/", Cluster, "/objects/ConsensusPeaks.bed")))
+
+saveRDS(Multiome, file = paste0(clusters,Cluster, "/clusters/CA1.Dor/objects/Multiome.rds"))
+
+####----------Export for SCENIC
+##Set Up Folders
+dir.create(file.path("../../SCENIC/", Cluster, "/objects/"), showWarnings = FALSE, recursive =T)
+dir.create(file.path("../../SCENIC/", Cluster, "/pycistopic/"), showWarnings = FALSE, recursive =T)
+
+##Transfer UMAP and PCA
+Multiome@reductions$umap@cell.embeddings = Multiome@reductions$umap@cell.embeddings[match(colnames(Multiome),rownames(Multiome@reductions$umap@cell.embeddings)),]
+Multiome@reductions$umap@misc$model$embedding = Multiome@reductions$umap@misc$model$embedding[match(colnames(Multiome),rownames(Multiome@reductions$umap@misc$model$embedding)),]
+Multiome@reductions$pca@global = TRUE
+
+# Save the RNA object
+sceRNA <- as.SingleCellExperiment(Multiome, assay = c("RNA"))
+zellkonverter::writeH5AD(sceRNA, paste0("../../SCENIC/", Cluster, "/objects/RNA.h5ad") , X_name = 'counts')
+
+# Save the ATAC object
+sceATAC <- as.SingleCellExperiment(Multiome, assay = c("specific_peaks"))
+zellkonverter::writeH5AD(sceATAC, paste0("../../SCENIC/", Cluster, "/objects/ATAC.h5ad"), X_name = 'counts')
+                         
+rm(sceRNA, sceATAC)
+```
+
+##--------------------Analysis of GC Neurons
+Now let's analyse DG Granule Cell neurons in more detail
+
+### Load and normalise
+```{r}
+Cluster = "DG"
+
+Multiome = readRDS(paste0(objects, "Multiome.rds"))
+Multiome = subset(Multiome, idents  = "ExNeu.DG.GC")
+gc()
+
+###Make Directories
+dir.create(file.path(clusters, Cluster), showWarnings = FALSE)
+dir.create(file.path(clusters, Cluster, "/objects/"), showWarnings = FALSE)
+dir.create(file.path(clusters, Cluster, "/plots/"), showWarnings = FALSE)
+dir.create(file.path(clusters, Cluster, "/DifferentialAccessibility/"), showWarnings = FALSE)
+dir.create(file.path(clusters, Cluster, "/DifferentialExpression/"), showWarnings = FALSE)
+
+###Normalise and run PCA on RNA data, remove MT, RB, and CC genes before PCA as these may not be useful to distibuish cell states
+Multiome[["RNA"]]$data = shifted_log_transform(Multiome[["RNA"]]$counts, pseudo_count = 1, size_factors = "deconvolution")
+
+#Find deviant genes
+Multiome.sce = as.SingleCellExperiment(Multiome)
+Multiome.sce = scry::devianceFeatureSelection(Multiome.sce, assay="counts", sorted=TRUE)
+#Plot to see how many genes show informative deviance
+ggplot(as.data.frame(rowData(Multiome.sce)), aes(x=as.numeric(1:nrow(rowData(Multiome.sce))), y=binomial_deviance))+
+  geom_line(color="darkblue") + xlab("ranked genes") + ggprism::theme_prism() + geom_vline(xintercept=2000)
+#Set deviant genes as variable features
+VariableFeatures(Multiome) = row.names(rowData(Multiome.sce))[c(1:2000)]
+rm(Multiome.sce)
+#Remove mito and rb genes from these, as they are likely uninformative
+load(paste0(objects, "geneSets/MT_RB_CC.Multiome.rds"))
+VariableFeatures(Multiome) = VariableFeatures(Multiome)[!VariableFeatures(Multiome) %in% c( MT, RB)]
+
+#Scale and run PCA
+Multiome = ScaleData(Multiome)
+Multiome = RunPCA(Multiome)
+ElbowPlot(Multiome, ndims = 50)
+```
+
+### Visualise
+
+```{r}
+Multiome <- RunUMAP(Multiome, dims= 1:11)
+Multiome = FindNeighbors(Multiome,dims = 1:11)
+gc()
+
+DimPlot(Multiome, label = TRUE)
+##Exneu Region Marker gene dotplot (data from embrowski et al., 2016)
+DotPlot(Multiome, features = c("Prox1", #DG Granule cells #Immature DG (Zhou 2023 Nature)
+                               "Pdzd2", #Dor DG GC
+                               "Tox3", #Vent DG GC 
+                               "Neurod1", #Immature DG
+                               "Igfbpl1", #Immature DG
+                               "Sox11", #Immature DG
+                               "Sox5", #Immature DG (Singh 2023 Nat. Comm)
+                               "Cd24a", #Immature DG
+                               "Dcx", #Newly formed (Singh 2023 Nat. Comm)
+                               "Dkk3", #CA Pyramidal
+                               "Lyd", #CA3 Pyramidal dor
+                               "Ptgs2",#CA3 Pyramidal dor
+                               "Cd109",#CA3 Pyramidal dor
+                               "Coch", #CA3 Pyramidal ven
+                               "Calb2", #DG Mossy cells
+                               "Nmb", #DG Mossy cells
+                               "Ache", #DG Mossy cells
+                               "Tm4sf1", #DG Mossy cells
+                               "Ctsc", #CA2 Pyramidal
+                               "Vcan", #CA2 Pyramidal
+                               "Cacng5", #CA2 Pyramidal
+                               "Fibcd1", #CA1 Pyramidal
+                               "Man1a", #CA1 Pyramidal
+                               "Kcnh7", #CA1 Pyramidal dor
+                               "Bcl11b", #CA1 Pyramidal dor (Singh 2023 Nat. Comm)
+                               "Wfs1", #CA1 Pyramidal dor
+                               "Dcn", #CA1 Pyramidal ven (Singh 2023 Nat. Comm)
+                               "Trhr", #CA1 Pyramidal ven
+                               "Grin3a", #CA1 Pyramidal ven
+                               "Dlk1","Tpbg", "Gpc3", "Col5a2", "Fn1", "Cbln4", "Lefty1", "Spink8", "Ly6g6e", #Subiculum submarkers (Cembrowski et al., 208)
+                               "Syt17", #Superficial layer (Singh 2023 Nat. Comm)
+                               "Nr4a2", #Deep layer (Singh 2023 Nat. Comm)
+                               "Htr2c", #Serotonergic (Singh 2023 Nat. Comm)
+                               "Rgs6", #Migrating (Singh 2023 Nat. Comm) ,
+                               "Nr4a1", "Arc", "Npas4", "Fos" #Potentiated
+                               ), assay = "RNA", group.by = "consensusClust")
+
+DotPlot(Multiome, features = c("Syt1","Snap25", "Slc17a7","Gad1","Rbms3","Aqp4","Gja1", "Tmem119", "Cx3cr1",  "Mbp", "Plp1","Bcas1","Pdgfra","Htr2c","Cldn5", "Flt1","Ttr", "Dcx", "Reln", "Gfap", "Ascl1", "Gal", "Sox11", "Neurod1"), assay = "RNA", group.by = "consensusClust")
+
+FeaturePlot(Multiome, features = "nCount_RNA")
+
+saveRDS(Multiome,  file = paste0(clusters,Cluster, "/objects/Multiome.rds"))
+```
+
+```{r}
+Multiome$Age = factor(ifelse(grepl("^Y", Multiome$ID), "Young", "Aged"), levels = c("Young", "Aged"))
+Multiome$Memory = factor(ifelse(grepl("*N$", Multiome$ID), "Naive", "CFC"), levels = c("Naive", "CFC"))
+Multiome$ID = factor(Multiome$ID, levels = c("YN", "YC", "ON", "OC"))
+
+#UMAP
+library(patchwork)
+
+p1 = DimPlot(Multiome,  pt.size = 1, label = TRUE, label.size = 6) + theme_void()
+p1 = p1 + NoLegend() 
+
+p2= ggplot(data.frame(x=100, y=100), aes(x=x, y=y)) + geom_point() + xlim(c(0,10)) + ylim(c(0,10)) + theme_classic() + ylab("UMAP 2") + xlab("UMAP 1") + theme(axis.text = element_blank(), axis.ticks = element_blank(), axis.line = element_line(arrow = arrow(angle = 15, length = unit(.5, "cm"), type = "closed")))
+        
+layout = c(
+  area(t=9, l=1, b = 12, r= 4),
+  area(t=1, l=1.5, b = 11.5, r= 11)
+)
+
+p2 + p1 + plot_layout(design = layout)
+
+ggsave(paste0(clusters ,Cluster,  "/plots/UMAP.png"), height = 10, width = 10)
+saveRDS(Multiome, file = paste0(clusters, Cluster, "/objects/Multiome.rds"))
+```
+
+###--------------------Call cell-state specific peaks 
+
+```{r}
+Cluster = "DG"
+# change the current plan to access parallelisation
+plan("multisession", workers = 5)
+
+Multiome@meta.data$clusters = Idents(Multiome)
+
+###Redo with cell-type peaks
+##Callpeakswithmacs3
+peaks <- CallPeaks(Multiome,
+                   assay="ATAC",
+                   macs2.path="~/anaconda3/bin/macs3",
+                   effective.genome.size = 1.87e9,
+                   group.by = "clusters")
+
+# remove peaks on nonstandard chromosomes and in genomic blacklist regions
+peaks <- keepStandardChromosomes(peaks, pruning.mode = "coarse")
+peaks <- subsetByOverlaps(x = peaks, ranges = blacklist_mm10, invert = TRUE)
+
+# quantify counts in each peak
+macs2_counts <- FeatureMatrix(
+  fragments = Multiome@assays$ATAC@fragments,
+  features = peaks,
+  cells = colnames(Multiome)
+)
+
+# create a new assay using the MACS2 peak set and add it to the Seurat object
+annotation <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79)
+seqlevelsStyle(annotation) <- "UCSC"
+genome(annotation) <- "mm10"
+Multiome[["specific_peaks"]] <- CreateChromatinAssay(
+  counts = macs2_counts,
+  fragments = Multiome@assays$ATAC@fragments,
+  annotation = Multiome@assays$ATAC@annotation,
+  min.cells	= 3
+)
+
+###Export to bed file
+rtracklayer::export.bed(peaks, paste0(clusters,Cluster, "/objects/ConsensusPeaks.bed"))
+plan("sequential")
+
+Multiome[["ATAC"]] = NULL
+
+##Normalise
+Multiome <- FindTopFeatures(Multiome, min.cutoff = 10, assay = "specific_peaks")
+Multiome <- RunTFIDF(Multiome, assay = "specific_peaks")
+Multiome <- RunSVD(Multiome, assay = "specific_peaks")
+
+Multiome$Group = paste0(Multiome$Age,".", Multiome$Memory)
+
+saveRDS(Multiome, file = paste0(clusters,Cluster, "/objects/Multiome.rds"))
+```
+
+### Add motif accessibility info 
+
+```{r}
+# Get a list of motif position frequency matrices from the HOCOMOCO database
+pwmList = readRDS(paste0(objects, "motifs/motifPWMlist.rds"))
+      
+# add motif information
+Multiome <- Signac::AddMotifs(
+  object = Multiome,
+  genome = BSgenome.Mmusculus.UCSC.mm10::BSgenome.Mmusculus.UCSC.mm10,
+  pfm = pwmList,
+  assay = "specific_peaks"
+)
+      
+Multiome <- Signac::RunChromVAR(
+  object = Multiome,
+  assay = "specific_peaks",
+  genome = BSgenome.Mmusculus.UCSC.mm10::BSgenome.Mmusculus.UCSC.mm10
+)
+
+saveRDS(Multiome, file = paste0(clusters,Cluster, "/objects/Multiome.rds"))
+```
+
+###Group Diff Acc + Exp
+
+```{r}
+Cluster = "DG"
+Multiome = readRDS(paste0(clusters,Cluster, "/objects/Multiome.rds"))
+
+load(paste0(objects, "geneSets/MT_RB_CC.Multiome.rds"))
+Multiome@assays$RNA["counts"] = Multiome@assays$RNA["counts"][!rownames(Multiome@assays$RNA["counts"]) %in% c( MT, RB),]
+
+###Load GeneSets
+load(paste0(objects, "/geneSets/GOterms.rds"))
+Chen_L_LTPgenes <- readxl::read_excel(paste0(objects, "geneSets/Chen_L-LTPgenes.XLSX"), 
+    sheet = "Table S1", skip = 3)
+Chen_L_LTPgenes = Chen_L_LTPgenes[order(Chen_L_LTPgenes$log2FC, decreasing = TRUE), ]
+GOterms[["Chen_LTPUP_30'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "30'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+GOterms[["Chen_LTPUP_60'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "60'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+GOterms[["Chen_LTPUP_120'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "120'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+
+Chen_L_LTPgenes = Chen_L_LTPgenes[order(Chen_L_LTPgenes$log2FC, decreasing = FALSE), ]
+GOterms[["Chen_LTPDown_30'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "30'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+GOterms[["Chen_LTPDown_60'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "60'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+GOterms[["Chen_LTPDown_120'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "120'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+
+#Set parallel future
+plan("sequential")
+
+Results = DoIntegratedAnalysis(MULTIobj = Multiome, Factor = "ID", MULTIcontrasts = c("GroupON-GroupYN", "GroupYC-GroupYN", "GroupOC-GroupON", "(GroupYC-GroupYN)-(GroupOC-GroupON)"), Genesets = GOterms, geneThreshold = 0.01, regionThreshold = 0.05, save_to = paste0(clusters,Cluster, "/"), DARthresh = list(0.05, 0.3), contrast_names = c("MG_Age", "MG_CFCyoung", "MG_CFCold", "MG_CFC*Age"), ResultsTable = FALSE, addMotifs = F)
+
+rm(Multiome)
+```
+
+#### Make some custom ridgeplots and volcanoplots
+```{r}
+##Make custom ridgeplot of GSEA results
+Cluster = "DG"
+library(ggtext)
+library(glue)
+source("../../../../../apps/EasyMultiome/R/Plotting.R")
+
+#CA1.Dor.Pot
+gsea = read.csv(file.path(clusters,Cluster, "/DifferentialExpression/YC_GSEA.csv"))
+ranks = read.csv(file.path(clusters,Cluster, "/DifferentialExpression/YC_EdgeR.csv"))
+rownames(ranks) = ranks$X
+
+#Plot ridgeplot of GSEA results
+ranks = ranks[order(ranks$logFC, decreasing = T),]
+ranks = setNames(ranks$logFC, ranks$X)
+ridgeplot.FGSEA(gsea, ranks, showCategory = c("cell adhesion",  "neuron projection development", "Chen_LTPUP_120'", "Chen_LTPUP_60'", "synaptic signaling", "behavior", "synapse assembly", "dendrite morphogenesis", "learning or memory", "MAPK cascade", "action potential", "translational elongation", "RNA processing", "translation", "cellular respiration"), title = "GO Term Differences in Young DG Neurons 3hr After CFC", 
+                xhighlight = "Chen_LTPUP_120|Chen_LTPUP_60", xhighlight_col = "#46B9DB") 
+ggsave(file = paste0(clusters,Cluster,"/plots/YC_GSEA_RidgePlot.jpg"), device = "jpeg", width = 9, dpi = 600, height = 6, bg = "white")
+```
+
+### As LTP-related genes are the most upregulated with CFC in young, but not old neurons, lets find and characterise the cells highly expressing these genes.
+
+```{r}
+###Assess levels of LTP (ARC/EGR1+ve) Neurons
+Cluster = "DG"
+Multiome = readRDS(paste0(clusters,Cluster, "/objects/Multiome.rds"))
+
+###Define LTP Neurons
+
+###Check thresholds for definition
+LTP_Genes = c("Egr1", "Arc", "Junb", "Npas4", "Rgs4", "Fos", "Egr4", "Dusp6", "Adamts1", "Fosb", "Ciart", "Clk1")
+
+ Multiome = AddModuleScore(
+  Multiome,
+  features = list(LTP_Genes),
+  pool = NULL,
+  nbin = 24,
+  ctrl = 50,
+  k = FALSE,
+  assay = "RNA",
+  name = "LTP",
+  seed = 1,
+  search = FALSE
+)
+
+DotPlot(Multiome, features = "LTP1", scale.min = 0)
+DotPlot(Multiome, features = "LTP1", group.by = "ID", scale.min = 0, scale = FALSE, assay = "RNA")  + viridis::scale_color_viridis() + xlab("Arc Egr1 Fos Fosb Module Score")
+ggsave(file = paste0(clusters, Cluster, "/plots/LTPmarkers_Dotplot.png"), device = "png", width = 6, height = 6)
+Multiome$Cluster_ID = paste0(Idents(Multiome), " ", Multiome$ID)
+DotPlot(Multiome, features = "LTP1", scale.min = 0, scale = FALSE, assay = "RNA", group.by = "Cluster_ID")  + viridis::scale_color_viridis() + xlab("Arc Egr1 Fos Fosb Module Score") + ylab("Cluster")
+
+##Make induction plots
+Multiome$IEGexpressing = InductionPlot(Multiome, Var = LTP_Genes, Group = "Memory", Group2 = "Age", GroupOrder = c("Naive", "CFC"), Group2Order = c("Young", "Aged"), lineCol = c("Blue", "Red"), Thresh = 0.2, Return_Assignments = TRUE, PrintThreshPlot = F) 
+ggsave(file = paste0(clusters,Cluster, "/plots/LTPmarkers_Induction_All.png"), device = "png", width = 10, height = 6, bg = "White")
+
+InductionPlot(Multiome, Var = LTP_Genes, Group = "Memory",Group2 = "Age", ylab = "Proportion of IEG-expressing Neurons", facet = "clusters", xlab = "Memory State", ncol = 4, GroupOrder = c("Naive", "CFC"), Group2Order = c("Young", "Aged"), lineCol = c("Blue", "Red"), Thresh = 0.35,  PrintThreshPlot = F,) + theme(plot.margin =margin(r=0.1, unit = "cm"))
+ggsave(file = paste0(clusters,Cluster, "/plots/IEGexpressing_Induction_Clusters.png"), device = "png", width = 12, height = 6, bg = "White")
+
+#Make a plot with all ExNeu Clusters
+ExNeu = readRDS(paste0(clusters,"ExNeu/objects/Multiome.rds"))
+ExNeu = merge(ExNeu, Multiome)
+ExNeu = JoinLayers(ExNeu)
+ExNeu$clusters = gsub("ExNeu.", "", ExNeu$clusters)
+InductionPlot(subset(ExNeu, idents = grep("CA|DG",unique(Idents(ExNeu)), value=T)), Var = LTP_Genes, Group = "Memory",Group2 = "Age", ylab = "Proportion of IEG-expressing Neurons", facet = "clusters", xlab = "Memory State", ncol = 3, GroupOrder = c("Naive", "CFC"), Group2Order = c("Young", "Aged"), lineCol = c("Blue", "Red"), Thresh = 0.55,  PrintThreshPlot = F) + theme(plot.margin =margin(r=0.1, unit = "cm"))
+ggsave(file = paste0(clusters,"ExNeu/plots/IEGexpressing_Induction_Clusters_incDG.png"), device = "png", width = 12, height = 8, bg = "White")
+#rm(ExNeu)
+
+saveRDS(Multiome, file = paste0(clusters,Cluster, "/objects/Multiome.rds"))
+```
+
+# Conduct DiffExpAnalysis To See Which Sets of Genes are Unusually Highly Expressed by IEG-accessible cells
+###Load GeneSets
+
+```{r}
+Cluster = "DG"
+Multiome = readRDS(paste0(clusters,Cluster, "/objects/Multiome.rds"))
+
+Multiome[["regulons"]] = CreateAssay5Object(data=Multiome[["specific_peaks"]]@misc$TFactivities)
+YCvsYN_regulons = FindMarkers(Multiome, assay = "regulons", group.by = "ID", ident.1 = "YC", ident.2="YN")
+DotPlot(Multiome, features = c("Fos", "Fosb", "Junb", "Fosl2"), assay = "regulons", group.by = "ID", scale.min = 0, scale = F)
+DotPlot(Multiome, features = c("Mef2a", "Mef2b", "Mef2c"), assay = "regulons", group.by = "ID", scale.min = 0, scale = F)
+
+Multiome$Engram = InductionPlot(Multiome, Var = c("Fos", "Fosb", "Junb", "Fosl2") , Group = "Memory", Group2 = "Age", ylab = paste0("Proportion of Engram Neurons"), xlab = "Memory State", Thresh = 2, Return_Assignments = T, All = T, assay = "regulons", nbin = 10, ctrl = 10, GroupOrder = c("Naive", "CFC"), Group2Order = c("Young", "Aged"), lineCol = c("Blue", "Red"), ncol = 4, PrintThreshPlot = F, scales = "free_y")
+
+Results = DoIntegratedAnalysis(MULTIobj = Multiome, MULTIcontrasts = "GroupVarset-GroupNo", Factor = "Engram", contrastNames = "EngramRegulons",Genesets = GOterms, geneThreshold = 0.01, regionThreshold = 0.05, save_to = file.path(clusters,Cluster, "/"), DARthresh = list(0.05, 0.3), pseudobulk = F, addMotifs = F, ResultsTable = FALSE, CollapsePathways=T, minGenesetSize=10, maxGenesetSize=Inf)
+
+saveRDS(Multiome, file = paste0(clusters,Cluster, "/objects/Multiome.rds"))
+```
+
+### Look at how motif accesibility changes between samples and IDs
+
+#### Motif activity heatmap by ID
+
+```{r}
+#Multiome = readRDS(paste0(clusters,Cluster, "/objects/Multiome.rds"))
+
+#Motif activity heatmap
+Multiome$clusters = Idents(Multiome)
+Idents(Multiome) = "ID"
+DS = subset(Multiome, downsample = 150)
+Idents(Multiome) = "clusters"
+IDs = factor(DS$ID, levels = c("YN", "YC", "ON", "OC"))
+DefaultAssay(DS) = "chromvar"
+
+matrix =  t(scale(t(DS@assays$chromvar@data)))
+#Remove celll with NAs
+missing = which(is.na(matrix), arr.ind=TRUE)
+if(nrow(missing) > 0){
+  matrix = matrix[, -unique(missing[,2])]
+  IDs = IDs[-unique(missing[,2])]
+}
+
+# what's the value range in the matrix
+quantiles = quantile(matrix, c(0.0001, 0.9999))
+## make the black color map to 0. the yellow map to highest and the purle map to the lowest
+col_fun = circlize::colorRamp2(c(quantiles[1], 0, quantiles[2]), c("#FF00FF", "black", "#FFFF00"))
+
+#Consensus hierachical clustering
+
+png(file=paste0(clusters,Cluster, "/plots/chromvar_HeatmapID.png"), width = 1050, height = 1250)
+dend2 = cluster_within_group(matrix, IDs)
+region_ht = Heatmap(matrix, cluster_columns = dend2, col = col_fun, row_names_gp = gpar(fontsize = 12.5),show_row_names = FALSE, show_column_names = FALSE, row_title = "TF Motif Accessibility", column_title = "TF Motif Accessibility by Age and Memory State", column_title_gp = gpar(fontsize = 35),
+             top_annotation = HeatmapAnnotation(ID = IDs, 
+                                col = list(ID = c("YN" = "royalblue1", "YC" = "blue", "ON" = "tomato", "OC" = "red")),
+                                                annotation_legend_param = list(ID = list(
+                                                  grid_height = unit(5, "cm"), 
+                                                  title = "Group ID",
+                                                  title_gp = gpar(fontsize = 20, fontface = "bold"),
+                                                  labels_gp = gpar(fontsize = 20),
+                                                  title_position = "lefttop-rot")),
+                                                annotation_name_gp= gpar(fontsize = 30), show_annotation_name = FALSE
+                                                  ), 
+             column_split = 4, column_gap = unit(2.5, "mm"), row_gap = unit(2, "mm"), km = 15, row_km_repeats = 1000, 
+             heatmap_legend_param = list(legend_height = unit(15, "cm"), 
+                                         title = "Motif Accessibility",
+                                         title_position = "lefttop-rot",
+                                         labels_gp = gpar(fontsize = 20),
+                                         title_gp = gpar(fontsize = 20, fontface = "bold")
+                                         #labels = c("very low", "low", "medium", "high")
+                                         )
+             
+             # annotation_legend_param = list(legend_height = unit(15, "cm"),
+             #                                title = "Group")
+)
+region_ht = draw(region_ht)
+dev.off()
+b=row_order(region_ht)
+```
+
+### Get TF names for 15th cluster
+```{r}
+bnames = sapply(b, function(x) unlist(Multiome[["specific_peaks"]]@motifs@motif.names[match(rownames(matrix)[unlist(x)],names(Multiome[["specific_peaks"]]@motifs@motif.names))]) 
+)
+
+# Plot out one of these motifs "Fosb" in different groups
+DotPlot(Multiome, group.by = "Cluster_ID", features = "Fosb", assay = "chromvar", scale = T, scale.min = 0)
+```
+
+### Define Engram Neurons as neurons with high accessibility of cluster 15 motifs
+
+```{r}
+Multiome$Engram = InductionPlot(Multiome, Var = rownames(matrix)[unlist(b['15'])] , Group = "Memory", Group2 = "Age", ylab = paste0("Proportion of Engram Neurons"), xlab = "Memory State", Thresh = 2.5, Return_Assignments = TRUE, All = T, assay = "chromvar", nbin = 25, ctrl = 30, GroupOrder = c("Naive", "CFC"), Group2Order = c("Young", "Aged"), lineCol = c("Blue", "Red"), ncol = 4, PrintThreshPlot = F, scales = "free_y")
+ggsave(file = paste0(clusters,Cluster, "/plots/IEGtargetaccessibility_Induction.png"), device = "png", width = 10, height = 6, bg = "White")
+saveRDS(Multiome, file = paste0(clusters,Cluster, "/objects/Multiome.rds"))
+
+#Conduct DiffExpAnalysis To See Which Sets of Genes are Unusually Highly Expressed by IEG-expressing or accessible cells
+###Load GeneSets
+load(paste0(objects, "/geneSets/GOterms.rds"))
+Chen_L_LTPgenes <- readxl::read_excel(paste0(objects, "geneSets/Chen_L-LTPgenes.XLSX"), 
+    sheet = "Table S1", skip = 3)
+
+Chen_L_LTPgenes = Chen_L_LTPgenes[order(Chen_L_LTPgenes$log2FC, decreasing = TRUE), ]
+GOterms[["Chen_LTPUP_30'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "30'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+GOterms[["Chen_LTPUP_60'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "60'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+GOterms[["Chen_LTPUP_120'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "120'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+
+Chen_L_LTPgenes = Chen_L_LTPgenes[order(Chen_L_LTPgenes$log2FC, decreasing = FALSE), ]
+GOterms[["Chen_LTPDown_30'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "30'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+GOterms[["Chen_LTPDown_60'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "60'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+GOterms[["Chen_LTPDown_120'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "120'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+
+Results = DoIntegratedAnalysis(MULTIobj = Multiome, MULTIcontrasts = "GroupVarset-GroupNo", Factor = "Engram", contrastNames = "Engram",Genesets = GOterms, geneThreshold = 0.05, regionThreshold = 0.05, save_to = file.path(clusters,Cluster, "/"), DARthresh = list(0.05, 0.3), pseudobulk = F, addMotifs = F, ResultsTable = FALSE, CollapsePathways=T, minGenesetSize=5, maxGenesetSize=500)
+```
+
+## Now lets export for grn inference with a custom method, as well as dictys and SCENIC+ in python
+
+#### Custom method
+
+Extract peak, RNA, and motif matrix from seurat object
+
+```{r}
+Cluster = "DG"
+Multiome = readRDS(paste0(clusters,Cluster, "/objects/Multiome.rds"))
+
+TFnames = unlist(Multiome[["specific_peaks"]]@motifs@motif.names[match(colnames(Multiome@assays$specific_peaks@motifs@data),names(Multiome[["specific_peaks"]]@motifs@motif.names))]) ##Get TF names for fifth cluster
+
+# Get peak counts and normalised matrix
+peakCounts = Multiome[["specific_peaks"]]["counts"]
+ACCthreshold = 0.01
+peakCounts = peakCounts[Matrix::rowSums(peakCounts > 0) > (ACCthreshold * ncol(peakCounts)),]
+peakMatrix = Multiome[["specific_peaks"]]["data"][rownames(Multiome[["specific_peaks"]]) %in% rownames(peakCounts),]
+dimNames = dimnames(peakMatrix)
+accessiblePeaks = rownames(peakMatrix)
+accessiblePeaks = GenomicRanges::GRanges(seqnames=sapply(strsplit(accessiblePeaks, "-"), `[`, 1),
+                                 ranges=IRanges(start = as.numeric(sapply(strsplit(accessiblePeaks, "-"), `[`, 2)), 
+                                                end = as.numeric(sapply(strsplit(accessiblePeaks, "-"), `[`, 3))))
+
+# Load peak counts into chromvar object
+chromvar.obj = SummarizedExperiment::SummarizedExperiment(
+    assays = list(counts = peakCounts),
+    rowRanges = accessiblePeaks
+  )
+chromvar.obj <- chromVAR::addGCBias(
+    object = chromvar.obj,
+    genome = BSgenome.Mmusculus.UCSC.mm10::BSgenome.Mmusculus.UCSC.mm10
+  )
+
+# Use cross validation to determine best nmf rank to use for imputation
+res = RcppML::crossValidate(peakMatrix, k = seq(2, 20, 2), reps = 3, seed = 123, verbose = T, L1=0.01)
+plot(res) #Pick the rank which achieves lowest error
+```
+
+```{r}
+# Run NMF with this rank and impute peakMatrix by matrix multiplication of the cell-rank weights and the peak-rank weights
+nmf = RcppML::nmf(peakMatrix, k=14, verbose = F, seed = 123, L1=0.01)
+peakMatrix = as(nmf$w %*% nmf$h, "dMatrix")
+dimnames(peakMatrix) = dimNames
+
+
+# Extract RNA matrix, with deviant genes only
+##Find deviant genes
+Multiome.sce = as.SingleCellExperiment(Multiome)
+Multiome.sce = scry::devianceFeatureSelection(Multiome.sce, assay="counts", sorted=TRUE)
+##Set deviant genes as variable features
+VariableFeatures(Multiome) = row.names(rowData(Multiome.sce))[c(1:12000)]
+rm(Multiome.sce)
+##Remove mito and rb genes from these, as they are likely uninformative
+load(paste0(objects, "geneSets/MT_RB_CC.Multiome.rds"))
+VariableFeatures(Multiome) = VariableFeatures(Multiome)[!VariableFeatures(Multiome) %in% c( MT, RB)]
+##Scale and regress out logUMI
+plan("multisession", workers = 5)
+rnaMatrix = ScaleData(Multiome, vars.to.regress = "logUMI")[["RNA"]]["scale.data"]
+plan("sequential")
+
+# Extract metadata, motif matrix, and chromvar matrix from the Seurat object
+Meta = Multiome@meta.data
+annotation = Multiome[["specific_peaks"]]@annotation
+MotifMat = GetMotifData(object = Multiome, slot = "data", assay = "specific_peaks") 
+MotifMat = MotifMat[rownames(MotifMat) %in% rownames(chromvar.obj), , drop=FALSE]
+chromvarMat = Multiome@assays$chromvar@data
+
+# Get chromvar dev scores
+dev <- chromVAR::computeDeviations(object = chromvar.obj, annotations = MotifMat)
+variability <- chromVAR::computeVariability(dev)
+##Remove NAs from chromvar
+chromvarMat = Multiome@assays$chromvar@data
+chromvarMat[is.na(chromvarMat)] = 0
+
+## Save data in a temporary file
+save(chromvarMat, MotifMat, rnaMatrix, Multiome, peakMatrix, chromvarMat, chromvar.obj, TFnames, dev, variability, GOterms,annotation, file = "regulon.rds")
+
+## Save accessible peak names from PRINT
+save(accessiblePeaks, file = "../../PRINT/DG/accessiblePeaks.rds")
+```
+
+### SCENIC+ and dictys - all ExNeu
+
+#### Load data and compute shared PCA, UMAP, and peak set
+
+```{r}
+# Load and merge objects
+Cluster = "DG"
+DG = readRDS(paste0(clusters,Cluster, "/objects/Multiome.rds"))
+Multiome = readRDS(paste0(clusters, "ExNeu/objects/Multiome.rds"))
+Multiome = merge(DG, Multiome)
+Multiome <- JoinLayers(Multiome)
+Cluster = "ExNeu"
+
+# Reassign cells to some broader celltype clusters
+Multiome$broad_clusters = gsub("ExNeu.Sub.Pro|ExNeu.Sub.Post|ExNeu.Sub.NP|ExNeu.Sub.Fn1|ExNeu.Sub.Sup|ExNeu.Sub-Ctx", "ExNeu.Sub", Multiome$clusters)
+Multiome$broad_clusters = gsub("ExNeu.CA3|ExNeu.CA2", "ExNeu.CA2_3", Multiome$broad_clusters)
+Multiome$broad_clusters = gsub("ExNeu.CA1.Dor|ExNeu.CA1.Ven", "ExNeu.CA1", Multiome$broad_clusters)
+
+###Normalise and run PCA on RNA data, remove MT, RB, and CC genes before PCA as these may not be useful to distibuish cell states
+Multiome[["RNA"]]$data = shifted_log_transform(Multiome[["RNA"]]$counts, pseudo_count = 1, size_factors = "deconvolution")
+
+#Find deviant genes
+Multiome.sce = as.SingleCellExperiment(Multiome)
+Multiome.sce = scry::devianceFeatureSelection(Multiome.sce, assay="counts", sorted=TRUE)
+#Plot to see how many genes show informative deviance
+ggplot(as.data.frame(rowData(Multiome.sce)), aes(x=as.numeric(1:nrow(rowData(Multiome.sce))), y=binomial_deviance))+
+  geom_line(color="darkblue") + xlab("ranked genes") + ggprism::theme_prism() + geom_vline(xintercept=2000)
+#Set deviant genes as variable features
+VariableFeatures(Multiome) = row.names(rowData(Multiome.sce))[c(1:2000)]
+rm(Multiome.sce)
+#Remove mito and rb genes from these, as they are likely uninformative
+load(paste0(objects, "geneSets/MT_RB_CC.Multiome.rds"))
+VariableFeatures(Multiome) = VariableFeatures(Multiome)[!VariableFeatures(Multiome) %in% c( MT, RB)]
+
+#Scale and run PCA
+Multiome$logUMI = log(Multiome$nCount_RNA)
+Multiome = ScaleData(Multiome, vars.to.regress = "logUMI")
+Multiome = RunPCA(Multiome)
+ElbowPlot(Multiome, ndims = 50)
+```
+
+```{r}
+Multiome <- RunUMAP(Multiome, dims= 1:11)
+Multiome = FindNeighbors(Multiome,dims = 1:11)
+
+# Call shared peak set
+## change the current plan to access parallelisation
+plan("multisession", workers = 15)
+peaks <- CallPeaks(Multiome,
+                   assay="specific_peaks",
+                   macs2.path="~/anaconda3/bin/macs3",
+                   effective.genome.size = 1.87e9,
+                   group.by = "clusters")
+
+# remove peaks on nonstandard chromosomes and in genomic blacklist regions
+peaks <- keepStandardChromosomes(peaks, pruning.mode = "coarse")
+peaks <- subsetByOverlaps(x = peaks, ranges = blacklist_mm10, invert = TRUE)
+
+# quantify counts in each peak
+macs2_counts <- FeatureMatrix(
+  fragments = Multiome@assays$specific_peaks@fragments,
+  features = peaks,
+  cells = colnames(Multiome)
+)
+
+# create a new assay using the MACS2 peak set and add it to the Seurat object
+annotation <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79)
+seqlevelsStyle(annotation) <- "UCSC"
+genome(annotation) <- "mm10"
+Multiome[["specific_peaks"]] <- CreateChromatinAssay(
+  counts = macs2_counts,
+  fragments = Multiome@assays$specific_peaks@fragments,
+  annotation = Multiome@assays$specific_peaks@annotation,
+  min.cells	= 3
+)
+
+##Normalise
+Multiome <- FindTopFeatures(Multiome, min.cutoff = 10, assay = "specific_peaks")
+Multiome <- RunTFIDF(Multiome, assay = "specific_peaks")
+Multiome <- RunSVD(Multiome, assay = "specific_peaks")
+
+plan("sequential")
+```
+
+###----------Export for SCENIC
+
+```{r}
+##Set Up Folders
+dir.create(file.path("../../SCENIC/ExNeu/objects/"), showWarnings = FALSE, recursive =T)
+dir.create(file.path("../../SCENIC/ExNeu/pycistopic/"), showWarnings = FALSE, recursive =T)
+
+###Export shared peaks to bed file
+rtracklayer::export.bed(peaks, paste0(objects, paste0("../../SCENIC/", Cluster, "/objects/ConsensusPeaks.bed")))
+
+##Transfer UMAP and PCA
+Multiome@reductions$umap@cell.embeddings = Multiome@reductions$umap@cell.embeddings[match(colnames(Multiome),rownames(Multiome@reductions$umap@cell.embeddings)),]
+Multiome@reductions$umap@misc$model$embedding = Multiome@reductions$umap@misc$model$embedding[match(colnames(Multiome),rownames(Multiome@reductions$umap@misc$model$embedding)),]
+Multiome@reductions$pca@global = TRUE
+
+# Save the RNA object
+sceRNA <- as.SingleCellExperiment(Multiome, assay = c("RNA"))
+zellkonverter::writeH5AD(sceRNA, paste0("../../SCENIC/ExNeu/objects/RNA.h5ad") , X_name = 'counts')
+
+# Save the ATAC object
+sceATAC <- as.SingleCellExperiment(Multiome, assay = c("specific_peaks"))
+zellkonverter::writeH5AD(sceATAC, paste0("../../SCENIC/ExNeu/objects/ATAC.h5ad"), X_name = 'counts')
+                         
+rm(sceRNA, sceATAC)
+```
+
+##----------Export for Dictys
+
+```{r}
+##Callpeakswithmacs3 for broad clusters
+dir.create(paste0(clusters,"ExNeu/objects/peaks/broadClusters/"), recursive = T)
+peaks <- CallPeaks(Multiome,
+                   assay="specific_peaks",
+                   macs2.path="~/anaconda3/bin/macs3",
+                   effective.genome.size = 1.87e9,
+                   group.by = "broad_clusters",
+                   cleanup=F,
+                   outdir=paste0(clusters,"ExNeu/objects/peaks/broadClusters/"))
+
+
+#Make folders
+DictysDir = "../../dictys"
+dir.create(DictysDir)
+dir.create(paste0(DictysDir, "/ExNeu/"))
+dir.create(paste0(DictysDir, "/ExNeu/samples/"))
+
+##See which barcode additions have been added to each sample - have to add these to bams for Dictys
+table(sub(".*\\-1", "",  rownames(Multiome@meta.data)), Multiome$ID)
+
+#Make csv of barcode to cluster annotations
+ClusterAssignments = data.frame(Barcode = rownames(Multiome@meta.data), Cluster = Multiome@meta.data$broad_clusters)
+write.csv(ClusterAssignments, file = paste0(DictysDir, "/ExNeu/clusters.csv"), row.names = F, quote = F)
+
+# Write RNA counts from genes detected in at least 0.5% of cells in cellranger format
+DropletUtils::write10xCounts(x = Multiome@assays$RNA["counts"][Matrix::rowSums(Multiome@assays$RNA["counts"] > 0) > (0.005 * ncol(Multiome@assays$RNA["counts"])),], path = paste0(DictysDir, "/ExNeu/GEXcounts/"), version="3", overwrite=T)
+
+Multiome = SplitObject(Multiome, split.by = "ID")
+
+#Make sample folders
+purrr::walk(names(Multiome), \(ID) dir.create(paste0(DictysDir, "/ExNeu/samples/", ID)))
+
+#Make csv of original barcodes (prior to addition of prefices during merging of seurat ojects) to subset cellranger BAMs with
+purrr::walk(names(Multiome), \(ID) write.table(gsub(".*_","\\1", rownames(Multiome[[ID]]@meta.data)), file = paste0(DictysDir, "/ExNeu/samples/", ID, "/barcodes.tsv"), row.names = F, col.names = F, quote = F)) 
+```
+
+###--------------------Analysis of Cajal-Retzus Cells
+
+Now let's analyse Cajal-Retzus Cells in more detail
+```{r}
+Cluster = "CRcells"
+Multiome = readRDS(paste0(objects, "Multiome.rds"))
+
+Multiome = subset(Multiome, idents  = "Cajal-Retzus Cells")
+
+#First plot the differences in their abundance with age and CFC
+###Induction Plot for CRcells
+Multiome$Age = factor(ifelse(grepl("^Y", Multiome$ID), "Young", "Aged"), levels = c("Young", "Aged"))
+Multiome$Memory = factor(ifelse(grepl("*N$", Multiome$ID), "Naive", "CFC"), levels = c("Naive", "CFC"))
+undebug(InductionPlot)
+InductionPlot(Multiome, Var = "Cajal-Retzus Cells", Group = "Memory", Group2 = "Age", GroupOrder = c("Naive", "CFC"), Group2Order = c("Young", "Aged"), lineCol = c("#46B9DB", "lightgrey")) 
+ggsave(file = paste0(clusters,Cluster, "/plots/CR_Induction.png"), device = "png", width = 6, height = 6, bg = "White")
+
+Multiome$CR = ifelse(Idents(Multiome) == "Cajal-Retzus Cells", "Cajal-Retzus Cell", "Other")
+pt <- table(Multiome$CR, Multiome$ID)
+pt <- as.data.frame(pt)
+pt = pt[!pt$Freq == 0,]
+
+### PLot how the abundance changes by experimental group
+ggplot(pt, aes(x = Var2, y = Freq, fill = Var1)) +
+  theme_bw(base_size = 15) +
+  geom_col(position = "fill", width = 0.5) +
+  xlab("Sample") +
+  ylab("Proportion") +
+  #scale_fill_manual(values = color_list) +
+  guides(fill=guide_legend(title="Cluster")) + xlab("Sample")  +
+  theme_prism() + scale_fill_manual(values=cb_pallette[c(3,2)]) +
+  theme(text = element_text(size =25), legend.position="top", legend.text = element_text(size = 20), legend.key.size = unit(1,"line"), axis.text = element_text(size = 20), strip.text.x = element_text(size = 20))
+ggsave(paste0(clusters ,Cluster,  "/plots/CRbyID_bar.png"), dpi = 600, width = 9, height = 6)
+```
+
+##--------------------Analysis of Interneurons
+Analyse Interneurons in more detail
+
+```{r}
+Cluster = "Interneurons"
+
+Multiome = readRDS(paste0(objects, "Multiome.rds"))
+Multiome = subset(Multiome, idents  = c("IN.Ntng1", "IN.Pvalb", "IN.Sst", "IN.Lamp5", "IN.Vip"))
+gc()
+
+###Make Directories
+dir.create(file.path(clusters, Cluster), showWarnings = FALSE)
+dir.create(file.path(clusters, Cluster, "/objects/"), showWarnings = FALSE)
+dir.create(file.path(clusters, Cluster, "/plots/"), showWarnings = FALSE)
+dir.create(file.path(clusters, Cluster, "/DifferentialAccessibility/"), showWarnings = FALSE)
+dir.create(file.path(clusters, Cluster, "/DifferentialExpression/"), showWarnings = FALSE)
+
+###Normalise and run PCA on RNA data, remove MT, RB, and CC genes before PCA as these may not be useful to distibuish cell states
+Multiome[["RNA"]]$data = shifted_log_transform(Multiome[["RNA"]]$counts, pseudo_count = 1, size_factors = "deconvolution")
+
+#Find deviant genes
+Multiome.sce = as.SingleCellExperiment(Multiome)
+Multiome.sce = scry::devianceFeatureSelection(Multiome.sce, assay="counts", sorted=TRUE)
+#Plot to see how many genes show informative deviance
+ggplot(as.data.frame(rowData(Multiome.sce)), aes(x=as.numeric(1:nrow(rowData(Multiome.sce))), y=binomial_deviance))+
+  geom_line(color="darkblue") + xlab("ranked genes") + ggprism::theme_prism() + geom_vline(xintercept=2000)
+#Set deviant genes as variable features
+VariableFeatures(Multiome) = row.names(rowData(Multiome.sce))[c(1:2000)]
+rm(Multiome.sce)
+#Remove mito and rb genes from these, as they are likely uninformative
+load(paste0(objects, "geneSets/MT_RB_CC.Multiome.rds"))
+VariableFeatures(Multiome) = VariableFeatures(Multiome)[!VariableFeatures(Multiome) %in% c( MT, RB)]
+
+#Scale and run PCA
+Multiome = ScaleData(Multiome, vars.to.regress = "logUMI")
+Multiome = RunPCA(Multiome)
+ElbowPlot(Multiome, ndims = 50)
+```
+
+```{r}
+Cluster = "Interneurons"
+
+Multiome <- RunUMAP(Multiome, dims=1:5)
+Multiome = FindNeighbors(Multiome,dims = 1:5)
+DimPlot(Multiome, label = TRUE, group.by = "consensusClust")
+
+DotPlot(Multiome, features = c("Rbms3","Sncg","Lhx6", "Sst","Ntng1",  "Vip", "Lamp5", "Chodl", "Pvalb"), assay = "RNA", scale.min = 0, dot.scale = 13)  + viridis::scale_color_viridis(option="D") 
+DotPlot(Multiome, features = c("Rbms3","Sncg","Lhx6","Meis2", "Sst","Ntng1","Cck",  "Vip", "Lamp5", "Chodl", "Pvalb"), assay = "RNA", scale.min = 0, dot.scale = 13, group.by = "consensusClust")  + viridis::scale_color_viridis(option="D") 
+DotPlot(Multiome, features = c("Rbms3","Sncg","Lhx6","Meis2", "Sst","Ntng1","Cck",  "Vip", "Lamp5", "Chodl", "Pvalb"), assay = "RNA", scale.min = 0, dot.scale = 13, group.by = "CC")  + viridis::scale_color_viridis(option="D") 
+#saveRDS(Multiome,  file = paste0(clusters,Cluster, "/objects/Multiome.rds"))
+```
+
+```{r}
+Cluster = "Interneurons"
+
+Multiome$Age = factor(ifelse(grepl("^Y", Multiome$ID), "Young", "Aged"), levels = c("Young", "Aged"))
+Multiome$Memory = factor(ifelse(grepl("*N$", Multiome$ID), "Naive", "CFC"), levels = c("Naive", "CFC"))
+Multiome$ID = factor(Multiome$ID, levels = c("YN", "YC", "ON", "OC"))
+
+pt <- table(Idents(Multiome), Multiome$Age)
+pt <- as.data.frame(pt)
+
+color_list <- ggplotColours(n=length(unique(Multiome$consensusClust)))
+
+ggplot(pt, aes(x = Var2, y = Freq, fill = Var1)) +
+  theme_bw(base_size = 15) +
+  geom_col(position = "fill", width = 0.5) +
+  xlab("Sample") +
+  ylab("Proportion") +
+  scale_fill_manual(values = color_list) +
+  guides(fill=guide_legend(title="Cluster")) + xlab("Months of Age") +
+  theme(text = element_text(size =25)) + theme(legend.position="top", legend.text = element_text(size = 16), legend.title = element_text(size=16)) + theme(legend.key.size = unit(1,"line"))
+ggsave(paste0(clusters ,Cluster,  "/plots/ClustersbyAge.png"), dpi = 600, width = 6, height = 6.5)
+
+pt <- table(Idents(Multiome), Multiome$ID)
+pt <- as.data.frame(pt)
+pt = pt[!pt$Freq == 0,]
+
+ggplot(pt, aes(x = Var2, y = Freq, fill = Var1)) +
+  theme_bw(base_size = 15) +
+  geom_col(position = "fill", width = 0.5) +
+  xlab("Sample") +
+  ylab("Proportion") +
+  scale_fill_manual(values = color_list) +
+  guides(fill=guide_legend(title="Cluster")) + xlab("Sample")  +
+  hrbrthemes::theme_ipsum( axis_title_just = "centre", axis_title_size = 15, base_family = "Arial", subtitle_size = 30) +
+  theme(text = element_text(size =25), legend.position="top", legend.text = element_text(size = 20), legend.title = element_text(size=20),legend.key.size = unit(1,"line"), axis.text = element_text(size = 20), strip.text.x = element_text(size = 20))
+ggsave(paste0(clusters ,Cluster,  "/plots/ClustersbyID.png"), dpi = 600, width = 8.5, height = 6)
+
+#UMAP
+library(patchwork)
+
+p1 = DimPlot(Multiome,  pt.size = 1, label = TRUE, label.size = 6) + theme_void()
+p1 = p1 + NoLegend() 
+
+p2= ggplot(data.frame(x=100, y=100), aes(x=x, y=y)) + geom_point() + xlim(c(0,10)) + ylim(c(0,10)) + theme_classic() + ylab("UMAP 2") + xlab("UMAP 1") + theme(axis.text = element_blank(), axis.ticks = element_blank(), axis.line = element_line(arrow = arrow(angle = 15, length = unit(.5, "cm"), type = "closed")))
+        
+layout = c(
+  area(t=9, l=1, b = 12, r= 4),
+  area(t=1, l=1.5, b = 11.5, r= 11)
+)
+
+p2 + p1 + plot_layout(design = layout)
+
+ggsave(paste0(clusters ,Cluster,  "/plots/UMAP.png"), height = 5, width = 5)
+
+saveRDS(Multiome, file = paste0(clusters, Cluster, "/objects/Multiome.rds"))
+```
+
+```{r}
+###--------------------Call cell-state specific peaks 
+Cluster = "Interneurons"
+# change the current plan to access parallelisation
+plan("multisession", workers = 10)
+
+Multiome@meta.data$clusters = Idents(Multiome)
+
+###Redo with cell-type peaks
+##Callpeakswithmacs3
+peaks <- CallPeaks(Multiome,
+                   assay="ATAC",
+                   macs2.path="~/anaconda3/bin/macs3",
+                   effective.genome.size = 1.87e9,
+                   group.by = "clusters")
+
+# remove peaks on nonstandard chromosomes and in genomic blacklist regions
+peaks <- keepStandardChromosomes(peaks, pruning.mode = "coarse")
+peaks <- subsetByOverlaps(x = peaks, ranges = blacklist_mm10, invert = TRUE)
+
+# quantify counts in each peak
+macs2_counts <- FeatureMatrix(
+  fragments = Multiome@assays$ATAC@fragments,
+  features = peaks,
+  cells = colnames(Multiome)
+)
+
+# create a new assay using the MACS2 peak set and add it to the Seurat object
+annotation <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79)
+seqlevelsStyle(annotation) <- "UCSC"
+genome(annotation) <- "mm10"
+Multiome[["specific_peaks"]] <- CreateChromatinAssay(
+  counts = macs2_counts,
+  fragments = Multiome@assays$ATAC@fragments,
+  annotation = Multiome@assays$ATAC@annotation,
+  min.cells	= 3
+)
+
+###Export to bed file
+rtracklayer::export.bed(peaks, paste0(clusters,Cluster, "/objects/ConsensusPeaks.bed"))
+plan("sequential")
+
+Multiome[["ATAC"]] = NULL
+
+##Normalise
+Multiome <- FindTopFeatures(Multiome, min.cutoff = 10, assay = "specific_peaks")
+Multiome <- RunTFIDF(Multiome, assay = "specific_peaks")
+Multiome <- RunSVD(Multiome, assay = "specific_peaks")
+
+Multiome$Group = paste0(Multiome$Age,".", Multiome$Memory)
+
+saveRDS(Multiome, file = paste0(clusters,Cluster, "/objects/Multiome.rds"))
+```
+
+## Now lets look at how motif accesibility changes between samples and IDs
+```{r}
+# Get a list of motif position frequency matrices from the HOCOMOCO database
+pwmList = readRDS(paste0(objects, "motifs/motifPWMlist.rds"))
+      
+# add motif information
+Multiome <- Signac::AddMotifs(
+  object = Multiome,
+  genome = BSgenome.Mmusculus.UCSC.mm10::BSgenome.Mmusculus.UCSC.mm10,
+  pfm = pwmList,
+  assay = "specific_peaks"
+)
+      
+Multiome <- Signac::RunChromVAR(
+  object = Multiome,
+  assay = "specific_peaks",
+  genome = BSgenome.Mmusculus.UCSC.mm10::BSgenome.Mmusculus.UCSC.mm10
+)
+
+saveRDS(Multiome, file = paste0(clusters,Cluster, "/objects/Multiome.rds"))
+```
+
+# Motif activity heatmap by ID
+
+```{r}
+#Motif activity heatmap
+Multiome$clusters = Idents(Multiome)
+Idents(Multiome) = "ID"
+DS = subset(Multiome, downsample = 150)
+Idents(Multiome) = "clusters"
+IDs = factor(DS$ID, levels = c("YN", "YC", "ON", "OC"))
+DefaultAssay(DS) = "chromvar"
+
+matrix =  t(scale(t(DS@assays$chromvar@data)))
+#Remove celll with NAs
+missing = which(is.na(matrix), arr.ind=TRUE)
+if(nrow(missing) > 0){
+  matrix = matrix[, -unique(missing[,2])]
+  IDs = IDs[-unique(missing[,2])]
+}
+
+# what's the value range in the matrix
+quantiles = quantile(matrix, c(0.0001, 0.9999))
+## make the black color map to 0. the yellow map to highest and the purle map to the lowest
+col_fun = circlize::colorRamp2(c(quantiles[1], 0, quantiles[2]), c("#FF00FF", "black", "#FFFF00"))
+
+#Consensus hierachical clustering
+
+png(file=paste0(clusters,Cluster, "/plots/chromvar_HeatmapID.png"), width = 1050, height = 1250)
+dend2 = cluster_within_group(matrix, IDs)
+region_ht = Heatmap(matrix, cluster_columns = dend2, col = col_fun, row_names_gp = gpar(fontsize = 12.5),show_row_names = FALSE, show_column_names = FALSE, row_title = "TF Motif Accessibility", column_title = "TF Motif Accessibility by Age and Memory State", column_title_gp = gpar(fontsize = 35),
+             top_annotation = HeatmapAnnotation(ID = IDs, 
+                                col = list(ID = c("YN" = "royalblue1", "YC" = "blue", "ON" = "tomato", "OC" = "red")),
+                                                annotation_legend_param = list(ID = list(
+                                                  grid_height = unit(5, "cm"), 
+                                                  title = "Group ID",
+                                                  title_gp = gpar(fontsize = 20, fontface = "bold"),
+                                                  labels_gp = gpar(fontsize = 20),
+                                                  title_position = "lefttop-rot")),
+                                                annotation_name_gp= gpar(fontsize = 30), show_annotation_name = FALSE
+                                                  ), 
+             column_split = 4, column_gap = unit(2.5, "mm"), row_gap = unit(2, "mm"), km = 15, row_km_repeats = 1000, 
+             heatmap_legend_param = list(legend_height = unit(15, "cm"), 
+                                         title = "Motif Accessibility",
+                                         title_position = "lefttop-rot",
+                                         labels_gp = gpar(fontsize = 20),
+                                         title_gp = gpar(fontsize = 20, fontface = "bold")
+                                         #labels = c("very low", "low", "medium", "high")
+                                         )
+             
+             # annotation_legend_param = list(legend_height = unit(15, "cm"),
+             #                                title = "Group")
+)
+region_ht = draw(region_ht)
+dev.off()
+b=row_order(region_ht)
+```
+
+# Motif activity heatmap by Cluster
+
+```{r}
+#Motif activity heatmap
+DS = subset(Multiome, downsample = 150)
+IDs = Idents(DS) 
+DefaultAssay(DS) = "chromvar"
+
+matrix =  t(scale(t(DS@assays$chromvar@data)))
+#Remove celll with NAs
+missing = which(is.na(matrix), arr.ind=TRUE)
+if(nrow(missing) > 0){
+  matrix = matrix[, -unique(missing[,2])]
+  IDs = IDs[-unique(missing[,2])]
+}
+
+
+# what's the value range in the matrix
+quantiles = quantile(matrix, c(0.0001, 0.9999))
+## make the black color map to 0. the yellow map to highest and the purle map to the lowest
+col_fun = circlize::colorRamp2(c(quantiles[1], 0, quantiles[2]), c("#FF00FF", "black", "#FFFF00"))
+ClusterCols = ggprism::prism_colour_pal(palette = "colorblind_safe")(length(unique(Idents(Multiome))))
+
+png(file=paste0(clusters,Cluster, "/plots/chromvar_HeatmapCluster.png"), width = 1050, height = 1250)
+dend2 = cluster_within_group(matrix, IDs)
+region_ht = Heatmap(matrix, cluster_columns = dend2, col = col_fun, row_names_gp = gpar(fontsize = 12.5),show_row_names = FALSE, show_column_names = FALSE, row_title = "TF Motif Accessibility", column_title = "TF Motif Accessibility by Age and Memory State", column_title_gp = gpar(fontsize = 35),
+             top_annotation = HeatmapAnnotation(ID = IDs, 
+                                                 col = list(clusters = purrr::map_chr(setNames(c(1:length(unique(Idents(Multiome)))), unique(Idents(Multiome))), 
+                                                                      \(ClustNum) ClusterCols[ClustNum])),
+                                                annotation_legend_param = list(ID = list(
+                                                  grid_height = unit(5, "cm"), 
+                                                  title = "Cluster",
+                                                  title_gp = gpar(fontsize = 20, fontface = "bold"),
+                                                  labels_gp = gpar(fontsize = 20),
+                                                  title_position = "lefttop-rot")),
+                                                annotation_name_gp= gpar(fontsize = 30), show_annotation_name = FALSE
+                                                  ), 
+             column_split = length(unique(Idents(Multiome))), column_gap = unit(2.5, "mm"), row_gap = unit(2, "mm"), km = 10, row_km_repeats = 1000, 
+             heatmap_legend_param = list(legend_height = unit(15, "cm"), 
+                                         title = "Motif Accessibility",
+                                         title_position = "lefttop-rot",
+                                         labels_gp = gpar(fontsize = 20),
+                                         title_gp = gpar(fontsize = 20, fontface = "bold")
+                                         #labels = c("very low", "low", "medium", "high")
+                                         )
+             
+             # annotation_legend_param = list(legend_height = unit(15, "cm"),
+             #                                title = "Group")
+)
+region_ht = draw(region_ht)
+dev.off()
+c=row_order(region_ht)
+```
+
+```{r}
+bnames = sapply(b, function(x) unlist(Multiome[["specific_peaks"]]@motifs@motif.names[match(rownames(matrix)[unlist(x)],names(Multiome[["specific_peaks"]]@motifs@motif.names))]) ##Get TF names for third cluster
+)
+cnames = sapply(c, function(x) unlist(Multiome[["specific_peaks"]]@motifs@motif.names[match(rownames(matrix)[unlist(x)],names(Multiome[["specific_peaks"]]@motifs@motif.names))]) ##Get TF names for third cluster
+)
+
+DotPlot(Multiome, group.by = "Cluster_ID", features = "Fos", assay = "chromvar", scale.min = 0)
+DotPlot(Multiome, group.by = "Cluster_ID", features = c("Fos", "Arc", "Egr1"), assay = "RNA", scale.min = 0)
+```
+
+## Cluster Diff Exp
+
+```{r}
+Cluster = "Interneurons"
+Multiome = readRDS(paste0(clusters,Cluster, "/objects/Multiome.rds"))
+
+###Load GeneSets
+load(paste0(objects, "/geneSets/GOterms.rds"))
+
+Chen_L_LTPgenes <- readxl::read_excel(paste0(objects, "geneSets/Chen_L-LTPgenes.XLSX"), 
+    sheet = "Table S1", skip = 3)
+
+Chen_L_LTPgenes = Chen_L_LTPgenes[order(Chen_L_LTPgenes$log2FC, decreasing = TRUE), ]
+GOterms[["Chen_LTPUP_30'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "30'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+GOterms[["Chen_LTPUP_60'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "60'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+GOterms[["Chen_LTPUP_120'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "120'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+
+Chen_L_LTPgenes = Chen_L_LTPgenes[order(Chen_L_LTPgenes$log2FC, decreasing = FALSE), ]
+GOterms[["Chen_LTPDown_30'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "30'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+GOterms[["Chen_LTPDown_60'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "60'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+GOterms[["Chen_LTPDown_120'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "120'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+
+Idents(Multiome) = gsub("-", "to", Idents(Multiome))
+Results = DoIntegratedAnalysis(MULTIobj = subset(Multiome, idents = unique(Idents(Multiome))[7:10]), MULTIcontrasts = "Clusters", Genesets = GOterms, DEGthreshold = 0.05, DARthreshold = 0.05, save_to = file.path(clusters,Cluster, "/clusters/"), DARthresh = list(0.1, 0.5), replicate_column = "ID", pseudobulk = F, addMotifs = F, ResultsTable = FALSE, Link = FALSE, AssessDiffPeaks = F)
+```
+
+## Group Diff Acc + Exp
+
+```{r}
+Cluster = "Interneurons"
+Multiome = readRDS(paste0(clusters,Cluster, "/objects/Multiome.rds"))
+
+#Remove MT and RB genes from analysis
+load(paste0(objects, "geneSets/MT_RB_CC.Multiome.rds"))
+Multiome@assays$RNA["counts"] = Multiome@assays$RNA["counts"][!rownames(Multiome@assays$RNA["counts"]) %in% c( MT, RB),]
+
+###Load GeneSets
+load(paste0(objects, "/geneSets/GOterms.rds"))
+
+#Add chen LTP genesets
+Chen_L_LTPgenes <- readxl::read_excel(paste0(objects, "geneSets/Chen_L-LTPgenes.XLSX"), 
+    sheet = "Table S1", skip = 3)
+Chen_L_LTPgenes = Chen_L_LTPgenes[order(Chen_L_LTPgenes$log2FC, decreasing = TRUE), ]
+GOterms[["Chen_LTPUP_30'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "30'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+GOterms[["Chen_LTPUP_60'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "60'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+GOterms[["Chen_LTPUP_120'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "120'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+
+Chen_L_LTPgenes = Chen_L_LTPgenes[order(Chen_L_LTPgenes$log2FC, decreasing = FALSE), ]
+GOterms[["Chen_LTPDown_30'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "30'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+GOterms[["Chen_LTPDown_60'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "60'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+GOterms[["Chen_LTPDown_120'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "120'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+
+#Set parallel future
+plan("sequential")
+
+Results = DoIntegratedAnalysis(obj = subset(Multiome, idents = unique(Idents(Multiome))[7:11]), Factor = "ID", MULTIcontrasts = c("GroupON-GroupYN", "GroupYC-GroupYN", "GroupOC-GroupON", "(GroupYC-GroupYN)-(GroupOC-GroupON)"), Genesets = GOterms, geneThreshold = 0.01, regionThreshold = 0.05, save_to = paste0(clusters,Cluster, "/"), DARthresh = list(0.05, 0.3), contrast_names = c("MG_Age", "MG_CFCyoung", "MG_CFCold", "MG_CFC*Age"), ResultsTable = FALSE, addMotifs = F)
+```

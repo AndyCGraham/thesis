@@ -1,0 +1,189 @@
+---
+title: "PRINT_Footprinting"
+output: html_document
+date: "2023-04-05"
+---
+
+```{r setup}
+source("../PRINT/code/utils.R")
+source("../PRINT/code/getCounts.R")
+source("../PRINT/code/getBias.R")
+source("../PRINT/code/getFootprints.R")
+source("../PRINT/code/getSubstructures.R")
+source("../PRINT/code/visualization.R")
+source("../PRINT/code/getGroupData.R")
+source("../PRINT/code/footprintTracking.R")
+source("../PRINT/code/getTFBS.R")
+#source("PRINT/code/NewBias.R")
+library(Seurat)
+library(Signac)
+
+Clusters = "../../multiomeSeurat/clusters/"
+projectMainDir <- "../CA1/"
+projectDataDir <- "../data/"
+
+##Start Python
+library(cluster)
+library(reticulate)
+path_to_python <- "/home/andy/anaconda3/bin/python"
+use_python(path_to_python) 
+```
+
+Set up the object and files
+
+```{r}
+#SetUp Folders
+dir.create(projectMainDir)
+dir.create(projectDataDir)
+
+#Merge Fragment Files
+metadata <- data.frame(
+  fragsFiles = purrr::map_chr(c("YN", "ON", "YC", "OC"), function(sample) paste0("../../../processedData/Multiome/CellRangerARC/", as.character(sample)  ,"/outs/atac_fragments.tsv.gz")),
+  prefix = c("YN_", "ON_", "YC_", "OC_"),
+  dataset = rep("Multiome", 4)
+)
+
+pathToFrags <- paste0(projectDataDir, "all.frags.tsv.gz")
+if(!file.exists(pathToFrags)){
+  
+  frags <- pbmcapply::pbmclapply(
+    1:dim(metadata)[1],
+    function(i){
+      fgs <- data.table::fread(metadata$fragsFiles[i])
+      fgs$V4 <- paste0(metadata$prefix, fgs$V4)
+      fgs = fgs[, 1:4]
+      colnames(fgs) = c("V1", "V2", "V3", "V4")
+      return(fgs)
+    }
+  ) 
+  
+  # Combine fragments from different samples and save to a file
+  fragsCombined <- data.table::rbindlist(frags)
+  data.table::fwrite(fragsCombined, pathToFrags, 
+                     compress = "gzip", sep = "\t")
+  rm(frags, fragsCombined)
+  
+}
+
+# Get peak ranges and resize to 1kb
+peakBed <- read.table(paste0(Clusters, "ExNeu/clusters/objects/ConsensusPeaks.bed"))
+peaks <- GRanges(seqnames = peakBed$V1,
+                 ranges = IRanges(start = peakBed$V2,
+                                  end = peakBed$V3))
+peaks <- IRanges::resize(peaks, width = 1000, fix = "center")
+saveRDS(peaks, paste0(projectMainDir, "regionRanges.rds"))
+peakBed <- data.frame(chr = as.character(seqnames(peaks)),
+                      start = start(peaks),
+                      end = end(peaks))
+write.table(peakBed, paste0(projectMainDir, "peaks.bed"), 
+            quote = F, row.names = F, col.names = F, sep = "\t")
+```
+
+```{bash}
+#Run to download TF binding and precomputed bias files
+#cd ../data
+#wget https://zenodo.org/record/7121027/files/mm10Tn5Bias.tar.gz -P ../precomputedTn5Bias
+#tar -xvf mm10Tn5Bias.tar.gz
+#wget https://zenodo.org/record/7121027/files/TFBS_model.h5
+#wget https://zenodo.org/records/7121027/files/dispModel.tar.gz
+#tar -xvf dispModel.tar.gz
+```
+
+
+```{r}
+projectName <- "CA1"
+project <- footprintingProject(projectName = projectName,
+refGenome = "mm10")
+dataDir(project) <- projectMainDir
+mainDir(project) <- projectMainDir
+
+#Add in PEAKS
+regionRanges(project) <- peaks
+
+#Add Tn5 Bias info
+if(file.exists(paste0(projectMainDir, "predBias.rds"))){
+regionBias(project) <- readRDS(paste0(projectMainDir, "predBias.rds"))
+}else{
+project <- getPrecomputedBias(project, nCores = 8)
+saveRDS(regionBias(project), paste0(projectMainDir, "predBias.rds"))
+}
+
+Multiome = readRDS(paste0(Clusters, "ExNeu/clusters/objects/Multiome.rds"))
+barcodeGroups = data.frame(barcodes=rownames(Multiome@meta.data), group = rep("All"))
+barcodeGrouping(project) <- barcodeGroups
+groups(project) <- mixedsort(unique(barcodeGroups$group))
+groupCellType(project) = as.character(barcodeGroups$group)
+
+project <- getCountTensor(project, pathToFrags, barcodeGroups, returnCombined = F, nCores = 6)
+
+  
+# Get gene-by-pseudobulk RNA matrix, followed by LogNormalization
+#pseudobulkRNAPath <- paste0(projectMainDir, "pseudobulkRNA.rds")
+# if(!file.exists(pseudobulkRNAPath)){
+#   RNAMatrix <- Multiome[["RNA"]]["counts"]
+#   pseudobulkRNA <- getGroupRNA(RNAMatrix, barcodeGroups)
+#   pseudobulkRNA <- t(t(pseudobulkRNA) / colMedians(pseudobulkRNA))
+#   pseudobulkRNA <- log2(pseudobulkRNA + 1)
+#   rownames(pseudobulkRNA) <- rownames(RNAMatrix)
+#   groupRNA(project) <- pseudobulkRNA
+#   saveRDS(pseudobulkRNA, pseudobulkRNAPath)
+#   rm(RNAMatrix)
+# }else{
+#   groupRNA(project) <- readRDS(pseudobulkRNAPath)
+# }
+
+saveRDS(project, file = paste0(projectMainDir, "PRINTobj.rds"))
+```
+
+```{r}
+#project = readRDS(paste0(projectMainDir, "PRINTobj.rds"))
+
+#Load Dispersion Models
+for(kernelSize in 2:100){
+dispModel(project, as.character(kernelSize)) <- readRDS(paste0(projectDataDir, "dispModel/dispersionModel", kernelSize, "bp.rds"))
+}
+
+# Load TFBS prediction model
+TFBindingModel(project) <- loadTFBSModel(h5Path = paste0(projectDataDir, "TFBS_model.h5"))
+
+# Save the project object with pre-loaded slots
+saveRDS(project, paste0(projectMainDir, "PRINTobj.rds"))
+```
+
+```{r}
+project = readRDS(paste0(projectMainDir, "PRINTobj.rds"))
+
+# Run TFBS detection
+project <- getTFBS(project,
+                     nCores = 16)
+
+# Get the TF binding score SummarizedExperiment object
+TFBindingSE <- getTFBindingSE(project)
+TFBSScores <- assay(TFBindingSE)
+sum(TFBSScores > 0.35)
+saveRDS(TFBindingSE, paste0(projectMainDir, "TFBindingSE.rds"))
+
+TFBindingSE = readRDS(paste0(projectMainDir, "TFBindingSE.rds"))
+# Get a list of motif position frequency matrices from the HOCOMOCO database
+pwmList = readRDS("../../multiomeSeurat/objects/motifs/motifPWMlist.rds")
+
+# Find motif matches
+accessiblePeaks = readRDS("../CA1/accessiblePeaks.rds")
+accessiblePeaks = GRanges(seqnames=sapply(strsplit(accessiblePeaks, "-"), `[`, 1),
+                                 ranges=IRanges(start = as.numeric(sapply(strsplit(accessiblePeaks, "-"), `[`, 2)), 
+                                                end = as.numeric(sapply(strsplit(accessiblePeaks, "-"), `[`, 3))))
+TFBSRangesAll <- rowRanges(TFBindingSE)
+TFBSRanges = TFBSRangesAll[TFBSScores > 0.35]
+regionRanges(project) <- IRanges::resize(TFBSRanges, width = 15, fix = "center") #Make TFBSs a bit bigger
+motifPositions <- getMotifPositions(project, pwmList, combineTFs = F, nCores = 10)
+boundRegions = lapply(motifPositions, function(TF){
+  if(is.null(TF)){
+    return(NULL)
+  }
+  ranges = as.data.frame(subsetByOverlaps(accessiblePeaks, TF))
+  ranges = paste(ranges$seqnames, ranges$start, ranges$end, sep = "-")
+} )
+saveRDS(motifPositions, paste0(projectMainDir, "motifPositions.rds"))
+saveRDS(boundRegions, paste0(projectMainDir, "boundRegions.rds"))
+```
+

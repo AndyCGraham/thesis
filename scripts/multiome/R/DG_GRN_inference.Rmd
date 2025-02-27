@@ -1,0 +1,326 @@
+---
+title: "DG_GRN_inferfence"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(echo = TRUE)
+
+#Set random seed
+set.seed(123)
+RNGkind("L'Ecuyer-CMRG")
+
+##Load required packages
+library(msigdbr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(Matrix)
+library(EnsDb.Mmusculus.v79)
+library(arrow)
+library(SingleCellExperiment)
+library(readr)
+library(GenomicRanges)
+library(ComplexHeatmap)
+library(patchwork)
+library(Seurat)
+library(gtools)
+library(Signac)
+library(ggtext)
+library(glue)
+library(patchwork)
+library(ggplot2)
+library(scCustomize)
+library(future)
+library(ggdark)
+library(tidyverse)
+library(ggrepel)
+library(clusterProfiler)
+library(enrichplot)
+library(fgsea)
+library(edgeR)
+library(RcppML)
+library(scDblFinder)
+library(wrapr)
+library(transformGamPoi)
+library(ggprism)
+#devtools::install("../../../../../apps/EasyMultiome/") #Must run at one point
+library(EasyMultiome)
+library(igraph)
+library(visNetwork)
+library(htmlwidgets)
+#library(consensusClustR)
+#devtools::load_all("../../../../../apps/EasyMulti_DElegate/")
+library(ggtext)
+library(glue)
+library(DOSE)
+
+ highlight = function(x, pat, color="black", family="") {
+    ifelse(grepl(pat, x), glue("<b style='font-family:{family}; color:{color}'>{x}</b>"), x)
+ }
+ 
+httr::set_config(httr::config(ssl_verifypeer = FALSE))
+
+##Start Python
+library(cluster)
+library(reticulate)
+path_to_python <- "/home/andy/anaconda3/bin/python"
+use_python(path_to_python)
+
+##Set Settings
+options(future.globals.maxSize = 10000 * 1024^2)
+
+# Some relative paths
+cellRanger = "../../../cellrangerOutput/"
+clusters = "../clusters/"
+plots = "../plots/"
+objects =  "../objects/"
+
+# Colour palette
+cb_pallette = c("#777a78", "#E4E1E3FF", "#F6222EFF", "#FE00FAFF", "#16FF32FF", "#3283FEFF", "#FEAF16FF", "#B00068FF", "#1CFFCEFF", "#90AD1CFF", "#2ED9FFFF", "#DEA0FDFF", "#AA0DFEFF", "#F8A19FFF", "#325A9BFF", "#C4451CFF", "#1C8356FF", "#85660DFF", "#B10DA1FF", "#FBE426FF", "#1CBE4FFF", "#FA0087FF", "#FC1CBFFF", "#F7E1A0FF", "#C075A6FF", "#782AB6FF", "#AAF400FF", "#BDCDFFFF", "#f2b672", "#B5EFB5FF", "#f75c02", "#5c0404", "#160459", "#FFFFCC", "#DF65B0", "#B3E2CD", "#FBB4AE", "#1F78B4", "#BDC9E1","#FDAE61", "#FFFF99","#02818A", "#F1B6DA","#DFC27D")
+```
+
+### First set up some gene-sets for later enrichment analysis of GRNs
+
+```{r}
+load(paste0(objects, "/geneSets/GOterms.rds"))
+Chen_L_LTPgenes <- readxl::read_excel(paste0(objects, "geneSets/Chen_L-LTPgenes.XLSX"), 
+    sheet = "Table S1", skip = 3)
+
+Chen_L_LTPgenes = Chen_L_LTPgenes[order(Chen_L_LTPgenes$log2FC, decreasing = TRUE), ]
+GOterms[["Chen_LTPUP_30'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "30'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+GOterms[["Chen_LTPUP_60'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "60'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+GOterms[["Chen_LTPUP_120'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.01 & Chen_L_LTPgenes$`Time point` == "120'" & Chen_L_LTPgenes$log2FC > 0.75,]$...1
+
+Chen_L_LTPgenes = Chen_L_LTPgenes[order(Chen_L_LTPgenes$log2FC, decreasing = FALSE), ]
+GOterms[["Chen_LTPDown_30'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "30'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+GOterms[["Chen_LTPDown_60'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "60'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+GOterms[["Chen_LTPDown_120'"]] = Chen_L_LTPgenes[Chen_L_LTPgenes$FDR < 0.05 & Chen_L_LTPgenes$`Time point` == "120'" & Chen_L_LTPgenes$log2FC < -0.5,]$...1
+```
+
+## Infer the GRNs
+
+Load PRINT footprinting results
+```{r}
+Cluster = "DG"
+load("regulon.rds")
+boundRegions = readRDS("../../PRINT/DG/boundRegions.rds") #foot printing PRINT footprinting
+library(randomForest)
+library(caret)
+library(doParallel)
+library(parallel)
+library(chromVAR)
+library(xgboost)
+source("GRN_inference.R")
+
+#Select the most variable TFs with bound regions detected
+boundRegions = boundRegions[sapply(boundRegions, \(TF) !is.null(TF))]
+TFnames = setNames(names(boundRegions), names(boundRegions))
+TFnames = TFnames[TFnames %in% rownames(variability[variability$p_value<0.05,])]
+TFnames = c(TFnames, setNames(c("Mef2a", "Mef2b", "Mef2c"), c("Mef2a", "Mef2b", "Mef2c")))
+
+## Run the inference
+Res=FindTFregulons(TFnames, boundRegions=boundRegions, chromvarMat = chromvarMat, chromvar.obj = chromvar.obj, motifMat = MotifMat, rnaMatrix = rnaMatrix, annotation = annotation, peakMatrix = peakMatrix, genesets = GOterms)})
+
+#Add to Multiome object
+Multiome = readRDS(paste0(clusters,Cluster, "/objects/Multiome.rds"))
+Multiome[["specific_peaks"]]@misc = Res
+saveRDS(Multiome, paste0(clusters,Cluster, "/objects/Multiome.rds"))
+saveRDS(Res, paste0(clusters,Cluster, "/objects/Regulons.rds"))
+```
+
+## Make some barplots of GRN GSEA enrichments
+```{r}
+Cluster="DG"
+Multiome = readRDS(paste0(clusters,Cluster, "/objects/Multiome.rds"))
+
+barplot(Multiome[["specific_peaks"]]@misc$GRNs$Fos$pos$GSEA, showCategory = 10, x = "GeneRatio") + viridis::scale_fill_viridis(direction = -1) + theme_ggprism_mod() + theme(axis.text.y=element_markdown(size = 18)) + scale_y_discrete(labels= function(x) highlight(x, "behavior|synaptic signaling", "#46B9DB")) + xlab("Ratio of GRN Genes in Set") + ggtitle(expression(paste("Gene-Set Enrichment of ", italic("Fos"), " Positive GRN"))) 
+ggsave(file = paste0(clusters,Cluster,"/plots/FosGRNenrichment.jpg"), device = "jpeg", width = 12.5, dpi = 600, height = 7, bg = "white")
+```
+
+# Heatmap of regulon activities 
+```{r}
+Cluster = "DG"
+Multiome = readRDS(paste0(clusters,Cluster, "/objects/Multiome.rds"))
+
+#Regulon activity heatmap
+Multiome$clusters = Idents(Multiome)
+Idents(Multiome) = "ID"
+DS = subset(Multiome, downsample = 850)
+Idents(Multiome) = "clusters"
+IDs = factor(DS$ID, levels = c("YN", "YC", "ON", "OC"))
+DefaultAssay(DS) = "regulons"
+
+matrix =  t(scale(t(DS@assays$regulons["data"])))
+
+# what's the value range in the matrix
+quantiles = quantile(matrix, c(0.00005, 0.9998))
+## make the black color map to 0. the yellow map to highest and the purle map to the lowest
+col_fun = circlize::colorRamp2(c(quantiles[1], 0, quantiles[2]), c("#FF00FF", "black", "#FFFF00"))
+
+#Consensus hierachical clustering
+
+png(file=paste0(clusters,Cluster, "/plots/regulon_HeatmapIDAll.png"), width = 1050, height = 2500)
+dend2 = cluster_within_group(matrix, IDs)
+region_ht = Heatmap(matrix, cluster_columns = dend2, col = col_fun, row_names_gp = gpar(fontsize = 12.5),show_row_names = T, show_column_names = FALSE, row_title = "GRN Activity", column_title = "GRN Activity by Age and Memory State", column_title_gp = gpar(fontsize = 35),
+             top_annotation = HeatmapAnnotation(ID = IDs, 
+                                col = list(ID = c("YN" = "royalblue1", "YC" = "blue", "ON" = "tomato", "OC" = "red")),
+                                                annotation_legend_param = list(ID = list(
+                                                  grid_height = unit(5, "cm"), 
+                                                  title = "Group ID",
+                                                  title_gp = gpar(fontsize = 20, fontface = "bold"),
+                                                  labels_gp = gpar(fontsize = 20),
+                                                  title_position = "lefttop-rot")),
+                                                annotation_name_gp= gpar(fontsize = 30), show_annotation_name = FALSE
+                                                  ), 
+             column_split = 4, column_gap = unit(2, "mm"), row_gap = unit(2, "mm"), km = 8, row_km_repeats = 1000, 
+             heatmap_legend_param = list(legend_height = unit(15, "cm"), 
+                                         title = "Motif Accessibility",
+                                         title_position = "lefttop-rot",
+                                         labels_gp = gpar(fontsize = 20),
+                                         title_gp = gpar(fontsize = 20, fontface = "bold")
+                                         #labels = c("very low", "low", "medium", "high")
+                                         )
+             
+             # annotation_legend_param = list(legend_height = unit(15, "cm"),
+             #                                title = "Group")
+)
+region_ht = draw(region_ht)
+dev.off()
+b=row_order(region_ht)
+
+bnames = sapply(b, function(x) unlist(rownames(DS@assays$regulons["data"])[match(rownames(matrix)[unlist(x)],rownames(DS@assays$regulons["data"]))]) ##Get TF names for third cluster
+)
+```
+
+# Conduct DiffExpAnalysis To See Which Sets of Genes are Unusually Highly Expressed by IEG-accessible cells
+
+### IEGs are in cluster 1
+
+```{r}
+## Define engram cells
+Multiome$EngramRegulons = InductionPlot(Multiome, Var = bnames[["1"]] , Group = "Memory", Group2 = "Age", ylab = paste0("Proportion of Neurons Accessible for IEG Motifs"), xlab = "Memory State", Thresh = 0.4, Return_Assignments = TRUE, All = T, assay = "regulons", nbin = 15, ctrl = 15, GroupOrder = c("Naive", "CFC"), Group2Order = c("Young", "Aged"), lineCol = c("Blue", "Red"), ncol = 4, PrintThreshPlot = F, scales = "free_y") 
+ggsave(file = paste0(clusters,Cluster, "/plots/IEGregulon_Induction.png"), device = "png", dpi = 600, width = 6, height = 6, bg = "White")
+
+# Now those cells with repressed IEG GRNs
+save = Multiome[["regulons"]]["data"]
+Multiome[["regulons"]]["data"] = 0 - Multiome[["regulons"]]["data"]
+Multiome$EngramRegulonsRepressed = InductionPlot(Multiome, Var =c("Fos", "Fosb", "Junb", "Fosl2") , Group = "Memory", Group2 = "Age", ylab = paste0("Proportion of Neurons Repressing IEG Motifs"), xlab = "Memory State", Thresh = 1, Return_Assignments = TRUE, All = T, assay = "regulons", nbin = 10, ctrl = 10, GroupOrder = c("Naive", "CFC"), Group2Order = c("Young", "Aged"), lineCol = c("Blue", "Red"), ncol = 4, PrintThreshPlot = F, scales = "free_y")
+ggsave(file = paste0(clusters,Cluster, "/plots/IEGregulon_Repression.png"), device = "png", dpi = 600, width = 6, height = 6, bg = "White")
+Multiome[["regulons"]]["data"] = save
+
+# Now another interesting cluster of regulons 
+
+Multiome$DiffRegulons = InductionPlot(Multiome, Var = unlist(bnames['8']) , Group = "Memory", Group2 = "Age", ylab = paste0("Proportion of Neurons Accessible for IEG Motifs"), xlab = "Memory State", Thresh = 0.22, Return_Assignments = T, All = T, assay = "regulonsRegions", nbin = 2, ctrl = 10, GroupOrder = c("Naive", "CFC"), Group2Order = c("Young", "Aged"), lineCol = c("Blue", "Red"), ncol = 4, PrintThreshPlot = F, scales = "free_y") 
+ggsave(file = paste0(clusters,Cluster, "/plots/Clust2regulon_Induction.png"), device = "png", dpi = 600, width = 6, height = 6, bg = "White")
+
+table(Multiome$EngramRegulonsRepressed, Multiome$DiffRegulons)
+
+#Conduct DiffExpAnalysis To See Which Sets of Genes are Unusually Highly Expressed by IEG-expressing or accessible cells
+###Load GeneSets
+Results = DoIntegratedAnalysis(MULTIobj = Multiome, MULTIcontrasts = "GroupVarset-GroupNo", Factor = "EngramRegulons", contrastNames = "EngramRegulons",Genesets = GOterms, geneThreshold = 0.01, regionThreshold = 0.05, save_to = file.path(clusters,Cluster, "/"), DARthresh = list(0.05, 0.3), pseudobulk = F, addMotifs = F, ResultsTable = FALSE, CollapsePathways=T, minGenesetSize=10, maxGenesetSize=Inf)
+```
+
+### Ridgeplot of GO Term Dysregulation in DG Engram Neurons vs Other DG Neurons
+
+```{r}
+source("../../../../../apps/EasyMultiome/R/Plotting.R")
+ridgeplot.gseaResult(Results[["EngramRegulons"]][["GSEA"]], showCategory = Results[["EngramRegulons"]][["GSEA"]]$ID[3:6], title = "GO Term Dysregulation in DG Engram Neurons vs Other DG Neurons", xhighlight = "cell adhesion", xhighlight_col = "#46B9DB") +
+  theme(plot.title = element_text(hjust = 1, size = 14.5), legend.justification = 2)
+ggsave(file = paste0(clusters,Cluster,"/plots/EngramRegulons_GSEA_RidgePlot.jpg"), device = "jpeg", width = 7, dpi = 600, height = 5, bg = "white")
+```
+
+### Now lets plot the GRNs of "Fos", "Fosb", "Junb", and "Fosl2" (IEGs)
+
+```{r}
+Cluster = "DG"
+Multiome = readRDS(paste0(clusters,Cluster, "/objects/Multiome.rds"))
+
+TFoI = c("Fos", "Fosb", "Junb", "Fosl2")
+#Get region-geneLinks
+Res = as.data.frame(do.call(rbind, purrr::map(Multiome[["specific_peaks"]]@misc$GRNs, \(x) x$pos[[1]])))
+Res = Res[Res$TF %in% TFoI,]
+
+#Only keep most significant positive associations
+Res = Res[Res$TFtoGeneR > 0 & Res$PeaktoGeneR > 0 & Res$TFtoPeakR > 0,]
+TFtoREG = Res[,c(12, 5, 11)]
+colnames(TFtoREG) = c("from", "to", "beta")
+TFtoREG$beta= as.numeric(TFtoREG$beta )
+TFtoREG$beta = TFtoREG$beta/ max(TFtoREG$beta)
+TFtoREG = TFtoREG[!duplicated(TFtoREG),]
+
+REGtoGene = Res[,c(5, 1, 8)]
+colnames(REGtoGene) = c("from", "to", "beta")
+REGtoGene = REGtoGene[!duplicated(REGtoGene),]
+REGtoGene$beta= as.numeric(REGtoGene$beta )
+REGtoGene$beta = REGtoGene$beta/ max(REGtoGene$beta)
+GraphDF = rbind(TFtoREG, REGtoGene)
+
+#Add node data
+nodeinfo = data.frame(names = c(unique(GraphDF$from), unique(REGtoGene$to)), nodeType = rep(c("TF", "Region", "Gene"), times = c(length(unique(TFtoREG$from)), length(unique(REGtoGene$from)), length(unique(REGtoGene$to)))), 
+                      color = rep(c("Red", "Orange", "Yellow"), times = c(length(unique(TFtoREG$from)), length(unique(REGtoGene$from)), length(unique(REGtoGene$to)))),
+                      label = c(unique(TFtoREG$from), rep(NA, length(unique(REGtoGene$from))), unique(REGtoGene$to)))
+
+nodeinfo = nodeinfo[!duplicated(nodeinfo$names),]
+
+#Make igraph object
+Net = graph_from_data_frame(GraphDF, directed = TRUE, vertices = nodeinfo)
+
+#Alter layout
+layout <- layout_nicely(Net)
+
+#Initial plot
+plot(Net, layout = layout, 
+     vertex.size = rep(c(10, 2, 4), times = c(length(unique(TFtoREG$from)), length(unique(REGtoGene$from)), length(unique(REGtoGene$to)))),
+     vertex.label.cex = rep(c(1, 0, 0.6), times = c(length(unique(TFtoREG$from)), length(unique(REGtoGene$from)), length(unique(REGtoGene$to)))), vertex.shape = rep(c("sphere", "csquare", "circle"), times = c(length(unique(TFtoREG$from)), length(unique(REGtoGene$from)), length(unique(REGtoGene$to)))),
+     edge.arrow.size = 0.25, edge.width = E(Net)$beta,
+     vertex.label.color = "black",
+     )
+
+#Interactive plot to change layout if desired
+tkid = tkplot(Net,layout = layout, 
+     vertex.size = rep(c(10, 2, 4), 
+                                                  times = c(length(unique(TFtoREG$from)), length(unique(REGtoGene$from)), length(unique(REGtoGene$to)))),
+     vertex.label.cex = rep(c(1, 0, 0.6), 
+                                                  times = c(length(unique(TFtoREG$from)), length(unique(REGtoGene$from)), length(unique(REGtoGene$to)))),
+     vertex.shape = rep(c("sphere", "csquare", "circle"), 
+                                                  times = c(length(unique(TFtoREG$from)), length(unique(REGtoGene$from)), length(unique(REGtoGene$to)))),
+     edge.arrow.size = 0.5, edge.width = E(Net)$beta,
+     vertex.label.color = "black") #tkid is the id of the tkplot that will open
+```
+
+### Now lets save the network plot
+```{r}
+layout <- tkplot.getcoords(tkid) # grab the coordinates from tkplot (while still running)
+tk_close(tkid, window.close = T)
+
+jpeg(file= paste0(clusters,Cluster, "/plots/EngramGRNs.jpg"), width = 5000, height = 5000, quality = 90, res = 300)
+plot(Net, layout = layout, 
+     vertex.size = rep(c(10, 2, 4), 
+                                                  times = c(length(unique(TFtoREG$from)), length(unique(REGtoGene$from)), length(unique(REGtoGene$to)))),
+     vertex.label.cex = rep(c(1, 0, 0.7), 
+                                                  times = c(length(unique(TFtoREG$from)), length(unique(REGtoGene$from)), length(unique(REGtoGene$to)))),
+     vertex.shape = rep(c("circle", "csquare", "circle"), 
+                                                  times = c(length(unique(TFtoREG$from)), length(unique(REGtoGene$from)), length(unique(REGtoGene$to)))),
+     edge.arrow.size = 0.5, edge.width = E(Net)$beta,
+     vertex.label.color = "black", vertex.label.family = "sans",
+     vertex.label.font = rep(c(4, 1, 3), 
+                                                  times = c(length(unique(TFtoREG$from)), length(unique(REGtoGene$from)), length(unique(REGtoGene$to)))))
+dev.off()
+
+#Also as an interactive network image - change properties on Net to change plotting parameters here
+V(Net)$size = rep(c(20, 2, 4), times = c(length(unique(TFtoREG$from)), length(unique(REGtoGene$from)), length(unique(REGtoGene$to))))
+V(Net)$label.cex = rep(c(2, 0, 0.6), times = c(length(unique(TFtoREG$from)), length(unique(REGtoGene$from)), length(unique(REGtoGene$to))))
+V(Net)$shape = rep(c("sphere", "csquare", "circle"), times = c(length(unique(TFtoREG$from)), length(unique(REGtoGene$from)), length(unique(REGtoGene$to))))
+
+E(Net)$arrow.size = 0.25
+E(Net)$width = E(Net)$beta
+
+plot(visIgraph(Net))
+data <- toVisNetworkData(Net)
+visNetwork(nodes = data$nodes, edges = data$edges, height = "1000px")
+
+dat = visNetwork(nodes = data$nodes, edges = data$edges, height = "2000px") %>% visIgraphLayout()
+saveWidget(dat, file = paste0(clusters,Cluster, "/plots/EngramGRNs.html"))
+```

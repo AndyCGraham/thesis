@@ -1,0 +1,272 @@
+---
+title: "PRINT_Footprinting"
+output: html_document
+date: "2023-04-05"
+---
+
+```{r setup}
+source("../PRINT/code/utils.R")
+source("../PRINT/code/getCounts.R")
+source("../PRINT/code/getBias.R")
+source("../PRINT/code/getFootprints.R")
+source("../PRINT/code/getSubstructures.R")
+source("../PRINT/code/visualization.R")
+source("../PRINT/code/getGroupData.R")
+source("../PRINT/code/footprintTracking.R")
+source("../PRINT/code/getTFBS.R")
+#source("PRINT/code/NewBias.R")
+library(Seurat)
+library(Signac)
+
+Clusters = "../../multiomeSeurat/clusters/"
+projectMainDir <- "../DG/"
+projectDataDir <- "../data/"
+
+##Start Python
+library(cluster)
+library(reticulate)
+path_to_python <- "/home/andy/anaconda3/bin/python"
+use_python(path_to_python) 
+```
+
+Set up the object and files
+
+```{r}
+#SetUp Folders
+dir.create(projectMainDir)
+dir.create(projectDataDir)
+
+#Merge Fragment Files
+metadata <- data.frame(
+  fragsFiles = purrr::map_chr(c("YN", "ON", "YC", "OC"), function(sample) paste0("../../../processedData/Multiome/CellRangerARC/", as.character(sample)  ,"/outs/atac_fragments.tsv.gz")),
+  prefix = c("YN_", "ON_", "YC_", "OC_"),
+  dataset = rep("Multiome", 4)
+)
+
+pathToFrags <- paste0(projectDataDir, "all.frags.tsv.gz")
+if(!file.exists(pathToFrags)){
+  
+  frags <- pbmcapply::pbmclapply(
+    1:dim(metadata)[1],
+    function(i){
+      fgs <- data.table::fread(metadata$fragsFiles[i])
+      fgs$V4 <- paste0(metadata$prefix, fgs$V4)
+      fgs = fgs[, 1:4]
+      colnames(fgs) = c("V1", "V2", "V3", "V4")
+      return(fgs)
+    }
+  ) 
+  
+  # Combine fragments from different samples and save to a file
+  fragsCombined <- data.table::rbindlist(frags)
+  data.table::fwrite(fragsCombined, pathToFrags, 
+                     compress = "gzip", sep = "\t")
+  rm(frags, fragsCombined)
+  
+}
+
+# Get peak ranges and resize to 1kb
+peakBed <- read.table(paste0(Clusters, "DG/objects/ConsensusPeaks.bed"))
+peaks <- GRanges(seqnames = peakBed$V1,
+                 ranges = IRanges(start = peakBed$V2,
+                                  end = peakBed$V3))
+peaks <- IRanges::resize(peaks, width = 1000, fix = "center")
+saveRDS(peaks, paste0(projectMainDir, "regionRanges.rds"))
+peakBed <- data.frame(chr = as.character(seqnames(peaks)),
+                      start = start(peaks),
+                      end = end(peaks))
+write.table(peakBed, paste0(projectMainDir, "peaks.bed"), 
+            quote = F, row.names = F, col.names = F, sep = "\t")
+```
+
+```{bash}
+#Run to download TF binding and precomputed bias files
+#cd ../data
+#wget https://zenodo.org/record/7121027/files/mm10Tn5Bias.tar.gz -P ../precomputedTn5Bias
+#tar -xvf mm10Tn5Bias.tar.gz
+#wget https://zenodo.org/record/7121027/files/TFBS_model.h5
+#wget https://zenodo.org/records/7121027/files/dispModel.tar.gz
+#tar -xvf dispModel.tar.gz
+```
+
+
+```{r}
+projectName <- "DG"
+project <- footprintingProject(projectName = projectName,
+refGenome = "mm10")
+dataDir(project) <- projectDataDir
+mainDir(project) <- projectMainDir
+
+#Add in PEAKS
+regionRanges(project) <- peaks
+
+#Add Tn5 Bias info
+if(file.exists(paste0(projectMainDir, "predBias.rds"))){
+regionBias(project) <- readRDS(paste0(projectMainDir, "predBias.rds"))
+}else{
+project <- getPrecomputedBias(project, nCores = 8)
+saveRDS(regionBias(project), paste0(projectMainDir, "predBias.rds"))
+}
+
+Multiome = readRDS("../../multiomeSeurat/clusters/DG/objects/Multiome.rds")
+barcodeGroups = data.frame(barcodes=rownames(Multiome@meta.data), group = rep("all"))
+barcodeGrouping(project) <- barcodeGroups
+groups(project) <- mixedsort(unique(barcodeGroups$group))
+groupCellType(project) = barcodeGroups$group
+
+project <- getCountTensor(project, pathToFrags, barcodeGroups, returnCombined = F, nCores = 6)
+
+  
+# Get gene-by-pseudobulk RNA matrix, followed by LogNormalization
+pseudobulkRNAPath <- paste0(projectMainDir, "pseudobulkRNA.rds")
+if(!file.exists(pseudobulkRNAPath)){
+  RNAMatrix <- Multiome[["RNA"]]["counts"]
+  pseudobulkRNA <- getGroupRNA(RNAMatrix, barcodeGroups)
+  pseudobulkRNA <- t(t(pseudobulkRNA) / colMedians(pseudobulkRNA))
+  pseudobulkRNA <- log2(pseudobulkRNA + 1)
+  rownames(pseudobulkRNA) <- rownames(RNAMatrix)
+  groupRNA(project) <- pseudobulkRNA
+  saveRDS(pseudobulkRNA, pseudobulkRNAPath)
+  rm(RNAMatrix)
+}else{
+  groupRNA(project) <- readRDS(pseudobulkRNAPath)
+}
+
+saveRDS(project, file = paste0(projectMainDir, "PRINTobj.rds"))
+```
+
+```{r}
+#project = readRDS(paste0(projectMainDir, "PRINTobj.rds"))
+
+#Load Dispersion Models
+for(kernelSize in 2:100){
+dispModel(project, as.character(kernelSize)) <- readRDS(paste0(projectDataDir, "dispModel/dispersionModel", kernelSize, "bp.rds"))
+}
+
+# Load TFBS prediction model
+TFBindingModel(project) <- loadTFBSModel(h5Path = paste0(projectDataDir, "TFBS_model.h5"))
+
+# Save the project object with pre-loaded slots
+saveRDS(project, paste0(projectMainDir, "PRINTobj.rds"))
+```
+
+```{r}
+project = readRDS(paste0(projectMainDir, "PRINTobj.rds"))
+
+#Run footprinting at a specific scale (50 = nucleosomes; 20 = TFs)
+footprintRadius <- 20
+
+project <- getFootprints(
+    project, 
+    mode = as.character(footprintRadius),
+    nCores = 8, 
+    footprintRadius = footprintRadius,
+    flankRadius = footprintRadius)
+saveRDS(project, paste0(projectMainDir, "PRINTobj.rds"))
+```
+
+```{r}
+project = readRDS(paste0(projectMainDir, "PRINTobj.rds"))
+
+# Run TFBS detection
+debug(getTFBS)
+groups(project)
+project <- getTFBS(project,
+                     nCores = 6)
+
+# Get the TF binding score SummarizedExperiment object
+TFBindingSE <- getTFBindingSE(project)
+TFBSScores <- assay(TFBindingSE)
+sum(TFBSScores > 0.6)
+saveRDS(TFBindingSE, paste0(projectMainDir, "TFBindingSE.rds"))
+
+TFBindingSE = readRDS(paste0(projectMainDir, "TFBindingSE.rds"))
+# Get a list of motif position frequency matrices from the HOCOMOCO database
+pwmList = readRDS("../../multiomeSeurat/objects/motifs/motifPWMlist.rds")
+
+# Find motif matches
+load("../DG/accessiblePeaks.rds")
+accessiblePeaks = GRanges(seqnames=sapply(strsplit(accessiblePeaks, "-"), `[`, 1),
+                                 ranges=IRanges(start = as.numeric(sapply(strsplit(accessiblePeaks, "-"), `[`, 2)), 
+                                                end = as.numeric(sapply(strsplit(accessiblePeaks, "-"), `[`, 3))))
+TFBSRangesAll <- rowRanges(TFBindingSE)
+TFBSRanges = TFBSRangesAll[TFBSScores > 0.35]
+regionRanges(project) <- IRanges::resize(TFBSRanges, width = 15, fix = "center") #Make TFBSs a bit bigger
+motifPositions <- getMotifPositions(project, pwmList, combineTFs = F, nCores = 10)
+boundRegions = lapply(motifPositions, function(TF){
+  if(is.null(TF)){
+    return(NULL)
+  }
+  ranges = as.data.frame(subsetByOverlaps(accessiblePeaks, TF))
+  ranges = paste(ranges$seqnames, ranges$start, ranges$end, sep = "-")
+} )
+saveRDS(motifPositions, paste0(projectMainDir, "motifPositions.rds"))
+saveRDS(boundRegions, paste0(projectMainDir, "boundRegions.rds"))
+
+b = subsetByOverlaps(peaks, motifPositions[["Fos"]])
+c = as.data.frame(b)
+ranges = paste(c$seqnames, c$start+1, c$end, sep = "-")
+Multiome = AddModuleScore(Multiome, features = list(ranges), name = "FosGenes", assay = "specific_peaks")
+VlnPlot(Multiome, group.by = "Engram", features = "FosGenes1", pt.size = 0, cols = ggprism::prism_colour_pal(palette = "colorblind_safe")(2)) +  ggprism::theme_prism()  +  scale_x_discrete(labels=c('Other', 'Engram')) 
+
+# Get substructure-by-pseudobulk SummarizedExperiment object
+substructurePath <- paste0(projectMainDir,"substructureSE.rds")
+if(file.exists(substructurePath)){
+  substructureSE <- readRDS(substructurePath)
+}else{
+  substructureSE <- getSubstructureSE(project,  nCores = 8)
+  saveRDS(substructureSE, substructurePath)
+}
+b = project@groupATAC
+saveRDS(project, paste0(projectMainDir, "PRINTobj.rds"))
+
+
+substructureRanges <- rowRanges(substructureSE)
+substructureMat <- assay(substructureSE)
+
+# Filter out sites with low signal
+substructureFilter <- rowMaxs(substructureMat) > 0.3
+substructureRanges <- substructureRanges[substructureFilter]
+substructureMat <- substructureMat[substructureFilter,]
+```
+The "aggregateATAC" and "aggregateScores" slots store the Tn5 insertion counts and footprinting scores when aggregating all pseudo-bulks together.
+
+```{r}
+regionFootprints <- project@footprints$'20'[[50]]
+positions <- 1:1000
+Tn5Insertion = regionFootprints$aggregateATAC
+barData <- data.frame(x1 = positions - 2, x2 = positions + 2, 
+                      y1 = 0, y2 = Tn5Insertion)
+p1 <- ggplot(barData) + 
+  geom_rect(aes(xmin = x1, xmax = x2, ymin = y1, ymax = y2), 
+            fill = "#006838") +
+  scale_y_continuous(expand = c(0, 0)) + xlab("") + ylab("Tn5 insertion") +
+  theme_classic() 
+
+aggregateScores <- regionFootprints$aggregateScores
+plotData <- data.frame(Position = positions, 
+                      aggregateScores = aggregateScores)
+p2 <- ggplot(plotData) + 
+  geom_ribbon(aes_string(x = "Position", ymin = 0, ymax = "aggregateScores"), 
+              fill = "#69ACD5") + xlab("") + ylab("Footprint scores") +
+  theme_classic()
+
+library(patchwork)
+p1 / p2
+
+plotMultiScale(project = project, regionInd = 50)
+
+# Get color mapping for cell types
+cellTypes <- unique(groupInfo$Clusters)
+cellTypeColors <- groupInfo$color[match(cellTypes, groupInfo$Clusters)]
+names(cellTypeColors) <- cellTypes
+
+regionInd <- 50
+plotFeatureHeatmap(project,
+                   regionInd = regionInd,
+                   feature = "footprint")
+plotFeatureHeatmap(project,
+                   regionInd = regionInd,
+                   feature = "TFBS")
+```
+

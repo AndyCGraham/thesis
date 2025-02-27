@@ -1,0 +1,474 @@
+---
+title: "Multiome.QC"
+output: html_document
+date: "2022-08-25"
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(echo = TRUE)
+
+#Set random seed
+set.seed(123)
+
+##Load required packages
+library(msigdbr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(Matrix)
+library(EnsDb.Mmusculus.v79)
+library(arrow)
+library(SingleCellExperiment)
+library(readr)
+library(GenomicRanges)
+library(ComplexHeatmap)
+library(patchwork)
+library(Seurat)
+library(gtools)
+library(Signac)
+library(patchwork)
+library(ggplot2)
+library(scCustomize)
+library(future)
+library(ggdark)
+library(tidyverse)
+library(ggrepel)
+library(clusterProfiler)
+library(enrichplot)
+library(fgsea)
+library(edgeR)
+library(scDblFinder)
+library(wrapr)
+library(transformGamPoi)
+#devtools::install("../../../../../apps/EasyMultiome/") #Must run at one point
+library(EasyMultiome)
+#devtools::load_all("../../../../../Apps/EasyMulti_DElegate/")
+httr::set_config(httr::config(ssl_verifypeer = FALSE))
+
+##Start Python
+library(cluster)
+library(reticulate)
+path_to_python <- "/home/andy/anaconda3/bin/python"
+use_python(path_to_python)
+
+##Set Settings
+options(future.globals.maxSize = 10000 * 1024^2)
+
+cellRanger = "../../../cellrangerOutput/"
+clusters = "../clusters/"
+plots = "../plots/"
+objects =  "../objects/"
+```
+
+```{r}
+####----------Set Up Folders
+dir.create(file.path(plots), showWarnings = FALSE)
+dir.create(file.path(objects), showWarnings = FALSE)
+dir.create(file.path(clusters), showWarnings = FALSE)
+dir.create(file.path(objects, "geneSets/"), showWarnings = FALSE)
+
+###Get and save genesets for later
+ msigdf <- msigdbr::msigdbr(species = "Mus musculus")
+msigdf_filtered <- msigdf %>% dplyr::select(gs_cat, gs_subcat, gs_name, gene_symbol, gs_description) %>%
+   filter(gs_subcat == "GO:BP") %>%
+   mutate(gs_subcat = ifelse(gs_subcat == "", "Hallmark", gs_subcat))
+ genesetDF <- msigdf_filtered %>%  mutate(gs_name = stringr::str_replace(sub("^.*?_{1}", "", gs_name), "_", "\\-")) %>%
+   group_by(gs_subcat, gs_name) %>%
+   summarise(geneset = list(gene_symbol)) %>%
+   group_by(gs_subcat) %>%
+   summarise(all_geneset = list(setNames(geneset, gs_name))) 
+ GOterms <- setNames(genesetDF$all_geneset, genesetDF$gs_subcat)
+ GOterms = GOterms[["GO:BP"]]
+ 
+save(GOterms, file = paste0(objects, "geneSets/GOterms.rds"))
+```
+
+## Load Data
+
+```{r}
+###-------------------Load in Data
+##Load Genome Info for ATAC Data
+annotation <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79)
+seqlevelsStyle(annotation) <- "UCSC"
+save(annotation, file = paste0(objects, "musAnnotation.rds"))
+
+## Load Data for All Samples
+RNAsamples = Sys.glob(file.path("../../../processedData/Multiome/cellBenderOutput", '*/CellbenderOutput_filtered.h5'))
+ATACsamples = Sys.glob(file.path("../../../processedData/Multiome/CellRangerARC/", '*/outs/raw_feature_bc_matrix.h5'))
+names(RNAsamples) = basename(dirname(RNAsamples))
+names(ATACsamples) = basename(dirname(dirname(ATACsamples)))
+
+## Load 10x cellbender RNA corrected matrices, ATAC matrices, and create traits
+dataList = purrr::map(setNames(names(RNAsamples),names(RNAsamples)), function(sample) {
+  
+  #Load RNA and ATAC matrices
+  RNA = scCustomize::Read_CellBender_h5_Mat(RNAsamples[sample], use.names = TRUE, unique.features = TRUE)
+  ATAC = Read10X_h5(ATACsamples[sample], use.names = TRUE, unique.features = TRUE)$Peaks
+  RNA = RNA[!rownames(RNA) %in% rownames(ATAC), ] #Remove peaks from cellbender output - not designed for ATAC
+  ATAC = ATAC[,colnames(ATAC) %in% colnames(RNA)]
+  ATAC = ATAC[,match(colnames(RNA), colnames(ATAC))]
+  
+  fragments = CreateFragmentObject(
+    paste0(dirname(ATACsamples[sample]), "/atac_fragments.tsv.gz"),
+    cells = setNames(ATAC@Dimnames[[2]], paste0(sample, "_", ATAC@Dimnames[[2]])),
+    validate.fragments = TRUE,
+    verbose = FALSE
+    )
+  
+  #Create sample traits from name
+  sampleTraits = read_delim(paste0(dirname(RNAsamples[sample]) ,"/CellbenderOutput_cell_barcodes.csv"),  ",", escape_double = FALSE, col_names = FALSE, trim_ws = TRUE)
+  sampleTraits$ID = rep(sample)
+  sampleTraits$Age = ifelse(grepl("^Y", sampleTraits$ID), "Young", "Old")
+  sampleTraits$Memory = ifelse(grepl("N$", sampleTraits$ID), "Naive", "CFC")
+  sampleTraits = tibble::column_to_rownames(sampleTraits, "X1")
+  
+  return(list(RNA, ATAC, fragments, sampleTraits))
+} )
+
+RNA = Merge_Sparse_Data_All(matrix_list = purrr::map(dataList, \(sample) sample[[1]]), add_cell_ids = names(dataList)) 
+ATAC = Merge_Sparse_Data_All(matrix_list = purrr::map(dataList, \(sample) sample[[2]]), add_cell_ids = names(dataList)) 
+fragments = purrr::map(dataList, \(sample) sample[[3]])
+sampleTraits = purrr::map(dataList, \(sample) sample[[4]]) |> list_rbind()
+
+rm(dataList)
+gc()
+
+## Create a merged Seurat object
+# This will make it easier to run the QC steps for both sample groups together and enable us to easily compare the data quality for all the samples.
+Multiome = Seurat::CreateSeuratObject(counts = RNA, names.field = 1, names.delim = "_", min.cells=5)
+  
+#Add ATAC Data
+Multiome[["ATAC"]] <- CreateChromatinAssay(
+    counts = ATAC,
+    sep = c(":", "-"),
+    fragments = fragments,
+    annotation = annotation
+)
+Multiome$ID = Multiome$orig.ident
+
+rm(RNA, ATAC, fragments, sampleTraits)
+gc()
+```
+
+## QC Plots
+```{r, fig.height=15}
+###-------------------QC
+####Identify MT, RB, and CC Genes
+Multiome = scCustomize::Add_Mito_Ribo_Seurat(seurat_object = Multiome, species = "mouse")
+MT = Multiome@assays$RNA@features[grep("^mt-", Multiome@assays$RNA@features)]
+RB = Multiome@assays$RNA@features[grep("^Rp[sl][[:digit:]]", Multiome@assays$RNA@features)]
+
+cell.cycle.tirosh <- read.csv("http://genomedata.org/rnaseq-tutorial/scrna/CellCycleTiroshSymbol2ID.csv", header=TRUE); # read in the list of genes
+
+mouse_human_genes <- read.csv("http://www.informatics.jax.org/downloads/reports/HOM_MouseHumanSequence.rpt",sep="\t")
+cell.cycle = EasyMultiome::convertHumanGeneList(cell.cycle.tirosh$Gene.Symbol, mouse_human_genes)
+cell.cycle = cell.cycle[!is.na(cell.cycle)]
+save(MT, RB,cell.cycle, file = paste0(objects, "geneSets/MT_RB_CC.Multiome.rds"))
+
+###Calculate and plot QC metrics
+Multiome <- NucleosomeSignal(Multiome, assay = "ATAC")
+Multiome <- TSSEnrichment(Multiome, assay = "ATAC")
+
+VlnPlot(Multiome,
+        features = c("nCount_RNA",
+                     "nFeature_RNA",
+                     "percent_mito",
+                     "nCount_ATAC",
+                     "nFeature_ATAC",
+                     "TSS.enrichment",
+                     "nucleosome_signal"),
+        ncol = 4,
+        pt.size = 0) + xlab("") + theme(axis.ticks = element_blank())
+VlnPlot(Multiome, features = c("nCount_RNA"), ncol = 1, pt.size = 0) + ylim(0, 10000) + geom_hline(yintercept=200, linetype="dashed", color = "blue")
+VlnPlot(Multiome, features = c("nFeature_ATAC"), ncol = 1, pt.size = 0) + ylim(0, 1000) + geom_hline(yintercept=100, linetype="dashed", color = "blue")
+VlnPlot(Multiome, features = c("nFeature_ATAC"), ncol = 1, pt.size = 0) + ylim(10000, 40000) + geom_hline(yintercept=27500, linetype="dashed", color = "red")
+VlnPlot(Multiome, features = c("TSS.enrichment"), ncol = 1, pt.size = 0) + ylim(0, 10) + geom_hline(yintercept=2, linetype="dashed", color = "blue")
+VlnPlot(Multiome, features = c("nucleosome_signal"), ncol = 1, pt.size = 0) + ylim(0, 10) + geom_hline(yintercept=2, linetype="dashed", color = "red") + geom_hline(yintercept=2, linetype="dashed", color = "blue")
+VlnPlot(Multiome, features = c("nCount_RNA"), ncol = 1, pt.size = 0) + ylim(10000, 60000)
+VlnPlot(Multiome, features = c("percent_mito_ribo"), ncol = 1, pt.size = 0) + ylim(0, 12)
+save(Multiome, file = paste0(objects, "Multiome_Prefilter.rds"))
+```
+
+## Filter and cluster
+```{r, fig.width=13}
+#load(paste0(objects, "Multiome_Prefilter.rds"))
+
+###Filter out low QC cells
+Multiome <- subset(Multiome,
+    nCount_RNA > 200 &
+    percent_mito_ribo < 5 &
+    nFeature_ATAC > 100 &
+    TSS.enrichment > 1 &
+    nucleosome_signal < 2
+)
+
+median(Multiome$nFeature_RNA)
+median(Multiome$nCount_RNA)
+median(Multiome$nFeature_ATAC)
+median(Multiome$nCount_ATAC)
+
+###Normalise RNA data, find deviant features, and run PCA on these features, remove MT, RB, and CC genes before PCA as these may not be useful to distibuish cell states
+#Normalise
+DefaultAssay(Multiome) = "RNA"
+Multiome[["RNA"]]$data = shifted_log_transform(Multiome[["RNA"]]$counts, pseudo_count = 1)
+
+#Find deviant genes
+Multiome.sce = as.SingleCellExperiment(Multiome)
+Multiome.sce = scry::devianceFeatureSelection(Multiome.sce, assay="counts", sorted=TRUE)
+#Plot to see how many genes show informative deviance
+ggplot(as.data.frame(rowData(Multiome.sce)), aes(x=as.numeric(1:nrow(rowData(Multiome.sce))), y=binomial_deviance))+
+  geom_line(color="darkblue") + xlab("ranked genes") + ggprism::theme_prism() + geom_vline(xintercept=2000)
+#Set deviant genes as variable features
+VariableFeatures(Multiome) = row.names(rowData(Multiome.sce))[c(1:2000)]
+rm(Multiome.sce)
+#Remove mito and rb genes from these, as they are likely uninformative
+load(paste0(objects, "geneSets/MT_RB_CC.Multiome.rds"))
+VariableFeatures(Multiome) = VariableFeatures(Multiome)[!VariableFeatures(Multiome) %in% c( MT, RB)]
+
+#Scale and run PCA
+Multiome = ScaleData(Multiome)
+Multiome = RunPCA(Multiome)
+ElbowPlot(Multiome, ndims = 50)
+```
+
+```{r}
+##Construct knn graph on nPCs, cluster, and visualise
+pca.feature.num <- 13
+Multiome <- RunUMAP(Multiome, dims=1:pca.feature.num)
+Multiome = FindNeighbors(Multiome,dims = 1:pca.feature.num)
+Multiome = FindClusters(Multiome, resolution=2, verbose = TRUE,algorithm=4) 
+
+###Visualisations of clustering
+plots <- DimPlot(Multiome, group.by = c("ID", "seurat_clusters"), label = TRUE)
+plots & theme(legend.position = "top") & guides(color = guide_legend(nrow = 3, byrow = TRUE,
+    override.aes = list(size = 3)))
+DimPlot(Multiome, label = TRUE)
+DimPlot(Multiome, split.by = "ID")
+FeaturePlot(Multiome, features = "nCount_RNA", reduction = "umap")
+FeaturePlot(Multiome, features = "nCount_ATAC", reduction = "umap")
+
+##Plot some common marker genes per cluster
+DotPlot(Multiome, features = c("Syt1","Snap25", "Slc17a7","Gad1","Rbms3","Aqp4","Gja1", "Tmem119", "Cx3cr1",  "Mbp", "Plp1","Bcas1","Pdgfra","Htr2c","Cldn5", "Flt1","Ttr", "Dcx", "Reln"), assay = "RNA")
+
+saveRDS(Multiome, file = paste0(objects, "Multiome_preDF.rds"))
+```
+
+## Identify Doublets
+```{r, warning = FALSE, message=FALSE}
+#Multiome = readRDS(paste0(objects, "Multiome.rds"))
+
+###Doublet detection and removal
+Multiome.sce = as.SingleCellExperiment(Multiome)
+Multiome.sce <- scDblFinder(Multiome.sce, samples="ID", BPPARAM=BiocParallel::MulticoreParam(10), nfeatures = VariableFeatures(Multiome), includePCs = 13)
+Multiome$scDblFinder.class = Multiome.sce$scDblFinder.class
+rm(Multiome.sce)
+gc()
+
+DotPlot(Multiome, features = c("Syt1","Snap25", "Slc17a7","Gad1","Rbms3","Sncg", "Sst",  "Vip", "Lamp5", "Chodl", "Pvalb", "Kit", "Prox1", "Aqp4","Gja1", "Tmem119", "Cx3cr1", "Mrc1", "Bcas1", "Nckap5", "Pcdh7", "Mbp", "Plp1","Pdgfra","Htr2c","Cldn5", "Flt1","Ttr", "Dcx", "Reln", "Nes"), assay = "RNA")
+DimPlot(Multiome, group.by = c("scDblFinder.class"), label = TRUE)
+DimPlot(Multiome, group.by = c("seurat_clusters"), label = TRUE)
+FeaturePlot(Multiome, "Slc17a7")
+FeaturePlot(Multiome, "Mbp")
+FeaturePlot(Multiome, "Bcas1")
+FeaturePlot(Multiome, "Synpr")
+FeaturePlot(Multiome, "Pdgfra")
+FeaturePlot(Multiome, "Id4")
+FeaturePlot(Multiome, "Prox1")
+FeaturePlot(Multiome, "Sox11")
+FeaturePlot(Multiome, "Aldoc")
+
+saveRDS(Multiome, file = paste0(objects, "Multiome_postDF.rds"))
+```
+
+```{r}
+#Multiome = readRDS(paste0(objects, "Multiome_postDF.rds"))
+
+#Call cells in clusters mainly composed of doublets doublets
+DoubletCluster = purrr::map_chr(setNames(unique(Idents(Multiome)), unique(Idents(Multiome))), \(Ident) names(sort(table(Multiome@meta.data[Multiome@meta.data$seurat_clusters == Ident,]$scDblFinder.class),decreasing=TRUE)[1])) 
+Multiome@meta.data[Idents(Multiome) %in% names(DoubletCluster[DoubletCluster == "doublet"]),]$scDblFinder.class = "doublet"
+
+#Thosse in these clusters are doublets
+Multiome@meta.data[Idents(Multiome) %in% c(40,41, 43,45:49),]$scDblFinder.class = "doublet"
+
+#Remove doublets
+Multiome = subset(x=Multiome, subset = (scDblFinder.class == "singlet"))
+
+#Find deviant genes
+Multiome.sce = as.SingleCellExperiment(Multiome)
+Multiome.sce = scry::devianceFeatureSelection(Multiome.sce, assay="counts", sorted=TRUE)
+#Plot to see how many genes show informative deviance
+ggplot(as.data.frame(rowData(Multiome.sce)), aes(x=as.numeric(1:nrow(rowData(Multiome.sce))), y=binomial_deviance))+
+  geom_line(color="darkblue") + xlab("ranked genes") + ggprism::theme_prism() + geom_vline(xintercept=2000)
+#Set deviant genes as variable features
+VariableFeatures(Multiome) = row.names(rowData(Multiome.sce))[c(1:2000)]
+rm(Multiome.sce)
+#Remove mito and rb genes from these, as they are likely uninformative
+load(paste0(objects, "geneSets/MT_RB_CC.Multiome.rds"))
+VariableFeatures(Multiome) = VariableFeatures(Multiome)[!VariableFeatures(Multiome) %in% c( MT, RB)]
+
+####Run PCA and cluster
+Multiome = RunPCA(Multiome)
+ElbowPlot(Multiome, ndims = 50)
+```
+
+```{r}
+pca.feature.num <- 11
+Multiome <- RunUMAP(Multiome, dims=1:pca.feature.num)
+Multiome = FindNeighbors(Multiome,dims = 1:pca.feature.num)
+Multiome = FindClusters(Multiome, resolution=0.2, verbose = TRUE,algorithm=4) 
+
+###Visualisations of clustering
+DimPlot(Multiome, label = TRUE)
+DimPlot(Multiome, group.by = "orig.ident")
+DimPlot(Multiome, split.by = "ID")
+FeaturePlot(Multiome, features = "nCount_RNA", reduction = "umap")
+FeaturePlot(Multiome, "Bcas1")
+FeaturePlot(Multiome, "Id4")
+FeaturePlot(Multiome, "Prox1")
+FeaturePlot(Multiome, "Sox11")
+FeaturePlot(Multiome, "Aldoc")
+FeaturePlot(Multiome, "Mbp")
+
+DotPlot(Multiome, features = c("Syt1","Snap25", "Slc17a7","Gad1","Rbms3","Aqp4","Gja1", "Tmem119", "Cx3cr1",  "Mbp", "Plp1","Bcas1","Pdgfra","Htr2c","Cldn5", "Flt1","Ttr", "Dcx", "Reln"), assay = "RNA")
+
+saveRDS(Multiome, file = paste0(objects, "Multiome.rds"))
+```
+
+## Consensus Clustering
+```{r}
+Multiome = readRDS(paste0(objects, "Multiome.rds"))
+
+#Run Consensus Clustering
+system.time({consensusClust = consensusClust(Multiome, pcNum = 11, nboots=500, resRange = seq.int(0.05, 1, by = 0.05), threads = 6, mode = "robust")}) 
+plot(consensusClust$clusterDendogram)
+Multiome$consensusClust = consensusClust$assignments
+
+DimPlot(Multiome, label = TRUE, group.by = "consensusClust") + NoLegend()
+DotPlot(Multiome, features = c("Syt1","Snap25", "Slc17a7","Gad1","Rbms3","Sncg", "Sst",  "Vip", "Lamp5", "Chodl", "Pvalb", "Kit", "Prox1", "Aqp4","Gja1", "Tmem119", "Cx3cr1", "Mrc1", "Bcas1", "Gpr37","Gpr17","Nckap5", "Pcdh7", "Mbp", "Plp1","Pdgfra","Htr2c","Cldn5", "Flt1","Ttr", "Dcx", "Reln", "Nes"), assay = "RNA", group.by = "consensusClust")
+
+
+DotPlot(Multiome, features = c("Bcas1","Il33", "Ptgds", "Opalin", "Klk6", "S100b", "Anxa5", "Cd59a", "Mgst3", "C4b", "Fos", "Npas4"), assay = "RNA", group.by = "consensusClust")
+
+
+##Exneu Region Marker gene dotplot (data from embrowski et al., 2016)
+DotPlot(Multiome, features = c("Prox1", #DG Granule cells #Immature DG (Zhou 2023 Nature)
+                               "Pdzd2", #Dor DG GC
+                               "Tox3", #Vent DG GC 
+                               "Neurod1", #Immature DG
+                               "Igfbpl1", #Immature DG
+                               "Sox11", #Immature DG
+                               "Sox5", #Immature DG (Singh 2023 Nat. Comm)
+                               "Cd24a", #Immature DG
+                               "Dcx", #Newly formed (Singh 2023 Nat. Comm)
+                               "Dkk3", #CA Pyramidal
+                               "Lyd", #CA3 Pyramidal dor
+                               "Ptgs2",#CA3 Pyramidal dor
+                               "Cd109",#CA3 Pyramidal dor
+                               "Coch", #CA3 Pyramidal ven
+                               "Calb2", #DG Mossy cells
+                               "Nmb", #DG Mossy cells
+                               "Ache", #DG Mossy cells
+                               "Tm4sf1", #DG Mossy cells
+                               "Ctsc", #CA2 Pyramidal
+                               "Vcan", #CA2 Pyramidal
+                               "Cacng5", #CA2 Pyramidal
+                               "Fibcd1", #CA1 Pyramidal
+                               "Man1a", #CA1 Pyramidal
+                               "Kcnh7", #CA1 Pyramidal dor
+                               "Bcl11b", #CA1 Pyramidal dor (Singh 2023 Nat. Comm)
+                               "Wfs1", #CA1 Pyramidal dor
+                               "Dcn", #CA1 Pyramidal ven (Singh 2023 Nat. Comm)
+                               "Trhr", #CA1 Pyramidal ven
+                               "Grin3a", #CA1 Pyramidal ven
+                               "Dlk1","Tpbg", "Gpc3", "Col5a2", "Fn1", "Cbln4", "Lefty1", "Spink8", "Ly6g6e", #Subiculum submarkers (Cembrowski et al., 208)
+                               "Syt17", #Superficial layer (Singh 2023 Nat. Comm)
+                               "Nr4a2", #Deep layer (Singh 2023 Nat. Comm)
+                               "Htr2c", #Serotonergic (Singh 2023 Nat. Comm)
+                               "Rgs6" #Migrating (Singh 2023 Nat. Comm) 
+                               ), assay = "RNA", group.by = "consensusClust")
+
+
+saveRDS(Multiome, file = paste0(objects, "Multiome.rds"))
+saveRDS(consensusClust, file = paste0(objects, "consensusClust.rds"))
+```
+
+## Label cell types
+
+```{r}
+#load(paste0(objects, "Multiome.rds"))
+
+Idents(Multiome) = factor(Multiome$consensusClust)
+new.cluster.ids <- c("ExNeu.CA1.Dor Potentiated", "GABA.IN", "ExNeu.CA1.Dor", "ExNeu.CA2+3", "ExNeu.CA1.Ven", "ExNeu.Sub.Fn1", "ExNeu.Ser.Rgs6","ExNeu.Ser.Cbln4", "ExNeu.DG.Ven", "ExNeu.Sub.NP", "ExNeu.DG.Dor", "ExNeu.DG.Dor","MFOL3","Microglia", "OPCs", "Mixed",     "MFOL1", "MFOL2")
+
+names(new.cluster.ids) <- levels(Multiome)
+Multiome <- RenameIdents(Multiome, new.cluster.ids)
+Multiome$Cluster_ID = paste0(Idents(Multiome), " ", Multiome$ID)
+
+Idents(Multiome) = factor(Idents(Multiome), levels = c("ExNeu.DG.Dor","ExNeu.DG.Ven", "ExNeu.CA1.Dor", "ExNeu.CA1.Dor Potentiated", "ExNeu.CA1.Ven","ExNeu.CA2+3", "ExNeu.Sub.Fn1","ExNeu.Ser.Rgs6","ExNeu.Ser.Cbln4",  "ExNeu.Sub.NP", "GABA.IN", "Mixed",  "MFOL1", "MFOL2","MFOL3", "OPCs",  "Microglia"))
+
+
+#Make sure markers are in scaled features for heatmap
+markers = c("Syt1","Snap25", "Slc17a7","Gad1","Gad2", "Reln", "Mbp", "Plp1", "Pdgfra","Tmem119", "Cx3cr1", "Aqp4","Gja1")
+Multiome[["Heatmap"]] = Multiome[["RNA"]]
+DefaultAssay(Multiome) = "Heatmap"
+VariableFeatures(Multiome) = c(VariableFeatures(Multiome), markers[!markers %in% VariableFeatures(Multiome)])
+Multiome = ScaleData(Multiome, assay = "Heatmap")
+Seurat::DoHeatmap(subset(Multiome, downsample = 50), features = markers, assay = "Heatmap", slot = "scale.data", disp.min = 0, disp.max = 1.25) + theme(text = element_text(size =20, face = "bold"), legend.key.size = unit(2, "cm"))  + 
+  scale_fill_gradientn(colors = viridis::viridis(n=10), na.value = "white") + theme(legend.position="top", plot.margin = margin(t = 0,  # Top margin
+                             r = 100,  # Right margin
+                             b = 10,  # Bottom margin
+                             l = 10)) + # Left margin
+ guides(color = "none") 
+ggsave(paste0(plots, "Marker_Heatmap.png"), height = 12, width = 20, limitsize = FALSE)
+DefaultAssay(Multiome) = "RNA"
+Multiome[["Heatmap"]] = NULL
+
+p1 = DimPlot(Multiome,  pt.size = 1, label = TRUE, label.size = 6, reduction = "umap", repel = F) + theme_void()
+p1 = p1 + NoLegend() 
+
+p2= ggplot(data.frame(x=100, y=100), aes(x=x, y=y)) + geom_point() + xlim(c(0,10)) + ylim(c(0,10)) + theme_classic() + ylab("UMAP 2") + xlab("UMAP 1") + theme(axis.text = element_blank(), axis.ticks = element_blank(), axis.line = element_line(arrow = arrow(angle = 15, length = unit(.5, "cm"), type = "closed")))
+        
+layout = c(
+    area(t=9, l=1, b = 12, r= 4),
+  area(t=1, l=1.5, b = 11.5, r= 11)
+
+)
+
+p2 + p1 + plot_layout(design = layout)
+
+ggsave(paste0(plots, "UMAP.png"), height = 10, width = 10)
+
+pt <- table(Idents(Multiome), Multiome$ID)
+pt <- as.data.frame(pt)
+
+color_list <- ggplotColours(n=length(unique(Idents(Multiome))))
+
+ggplot(pt, aes(x = Var2, y = Freq, fill = Var1)) +
+  theme_bw(base_size = 15) +
+  geom_col(position = "fill", width = 0.5) +
+  xlab("Sample") +
+  ylab("Proportion") +
+  scale_fill_manual(values = color_list) +
+  hrbrthemes::theme_ipsum( axis_title_just = "centre", axis_title_size = 20, base_family = "Arial", axis_text_size = 20) + 
+  guides(fill=guide_legend(title="Cluster")) + xlab("") +
+  theme(text = element_text(size =25), legend.position=c(0.45, 1),legend.direction = "horizontal", legend.text = element_text(size = 17.5), legend.title = element_text(size=20),legend.key.size = unit(1,"line"), axis.text = element_text(size = 30)) + coord_flip() 
+ggsave(paste0(plots, "ClustersbyID.png"), dpi = 600, width = 15, height = 6)
+
+saveRDS(Multiome, file = paste0(objects, "Multiome.rds"))
+```
+
+## Export for CellAnnotation with SCVI (see multiome/py/annotation.ipynb)
+
+```{r}
+##Set Up Folders
+dir.create(file.path("../../cellAnnotation/objects/obj/"), showWarnings = FALSE)
+
+##Transfer UMAP and PCA
+Multiome@reductions$umap@cell.embeddings = Multiome@reductions$umap@cell.embeddings[match(colnames(Multiome),rownames(Multiome@reductions$umap@cell.embeddings)),]
+Multiome@reductions$umap@misc$model$embedding = Multiome@reductions$umap@misc$model$embedding[match(colnames(Multiome),rownames(Multiome@reductions$umap@misc$model$embedding)),]
+Multiome@reductions$pca@global = TRUE
+
+# Save the RNA object
+sceMultiome <- as.SingleCellExperiment(Multiome, assay = c("RNA"))
+zellkonverter::writeH5AD(sceMultiome, "../../cellAnnotation/objects/obj/Multiome.h5ad", X_name = 'counts')
+```
