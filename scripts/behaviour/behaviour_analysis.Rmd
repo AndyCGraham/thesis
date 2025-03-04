@@ -1,0 +1,366 @@
+---
+title: "behaviourAnalysis"
+author: "Andy Graham"
+date: '`r Sys.Date()`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#Load packages
+library(dplyr)
+library(ggplot2)
+library(readxl)
+library(ggprism)
+
+#Set random seed
+set.seed(123)
+
+cb_pallette = ggprism_data$fill_palettes$colorblind_safe
+cb_pallette = c(cb_pallette[1], "#E4E1E3FF", cb_pallette[2:length(cb_pallette)])
+```
+
+```{r}
+dir.create("../plots/")
+dir.create("../plots/ymaze/")
+dir.create("../plots/OLM/")
+dir.create("../plots/CFC/")
+```
+
+```{r setup}
+#Welch T Test Model
+welch = function(df, y_col, groups, grouping_column, covariates, var.equal=F){
+  df = df[df[,grouping_column] %in% groups, ]
+  df$y = df[,y_col]
+  df$group = factor(df[,grouping_column], levels = groups)
+  df$covariates = ifelse(df[,covariates] == unique(df[,covariates])[2], 1, 0)
+  if(var.equal){
+    res = summary(lm(y ~ group + covariates, data = df))
+    df = res$fstatistic = res$fstatistic[3]
+    res = res$coefficients[2,]
+  } else {
+    res = nlme::gls(y ~ 1 + group + covariates, data = df, weights = nlme::varIdent(form=~1|group), method="ML")
+    df = res$dims$N - res$dims$p
+    res = summary(res)$tTable[2,]
+  }
+  res[5] = df
+  return(res)
+}
+
+get_pvals = function(data, y_col, groups, grouping_column, covariates, ...){
+  res = lapply(groups, \(comparison) welch(data, y_col, comparison, grouping_column, covariates, ...))
+  res_df = do.call("rbind", res)
+  pvalDF = data.frame(".y." = rep(y_col, nrow(res_df)),
+                      group1 = sapply(groups, \(comparison) comparison[1]),
+                      group2 = sapply(groups, \(comparison) comparison[2]),
+                      n1 = sapply(groups, \(comparison) sum(data[,grouping_column] == comparison[1])),
+                      n2 = sapply(groups, \(comparison) sum(data[,grouping_column] == comparison[2])),
+                      statistic = res_df[,3],
+                      df = res_df[,5],
+                      p = res_df[,4],
+                      p.adj = p.adjust(res_df[,4]),
+                      p.adj.signif = ifelse(p.adjust(res_df[,4]) >= 0.05, "ns",
+                                            ifelse(p.adjust(res_df[,4]) >= 0.01,"*", 
+                                                   ifelse(p.adjust(res_df[,4]) >= 0.001,"**", "***")))
+                      )
+}
+```
+
+# Compare OLM DIs Exp1
+```{r}
+OLM = read.csv("../data/behaviour/results/OLM/manualResults_shail.csv") %>%
+  dplyr::select(1:4) %>%
+  dplyr::rename(c("Young Control", "Young GW3965", "Aged Control", "Aged GW3965")) %>%
+  tidyr::gather(Group, DI, 1:4, factor_key=TRUE) %>%
+  dplyr::mutate(ID = 
+  toupper(c("10a", "10b", "10c", "10d", "10e", "11a", "11b", "11c", "11d", "11e", 
+            "C2T1", "C2T2", "C2T3", "C6T1", "C6T2", "C6T3", "C6T4", "C6T5",
+    "4a", "4b", "4c", "4d", "4e", "5a", "5b", "5c", "5d", "5e", 
+    "C4T1", "C4T2", "C4T3", "C4T1", "C7T2", "C7T3", "C7T4", "C7T5",
+     "6a", "6b", "6c", "6d", "7a", "7b", "7c", "7d", "8a", "9a",
+    "C3T1", "C3T2", "C3T3", "C8T1", "C8T2", "C8T3", "C8T4", "C8T5",
+    "1a", "1b", "1c", "1d", "2a", "2b", "2c", "2d", "3c", "3b"   
+    ,"C1T1", "C1T2", "C1T3", "C1T4", "C5T1", "C5T2", "C5T3", "C5T4"
+    ))) %>%
+    dplyr::filter(!is.na(OLM$DI)) %>%
+  dplyr::mutate(TreatAge = factor(Group, levels = c("Young Control", "Young GW3965","Aged Control", "Aged GW3965")),
+                Experiment = rep(c("Experiment 2","Experiment 1", "Experiment 2","Experiment 1", "Experiment 2","Experiment 1", "Experiment 2","Experiment 1"), times = c(10, 8, 10, 8, 10, 8, 10, 8))) %>%
+  tidyr::separate(Group, into = c("Age", "Treatment"), sep = " ")
+
+#Experiment 1 only
+OLM_exp1 = OLM %>% dplyr::filter(Experiment == "Experiment 1")
+
+#Type III ANOVA as we suspect an interaction
+ANOVA = OLM_exp1 %>%
+   rstatix::anova_test(DI ~ Age*Treatment, white.adjust = T, type = "III")
+df_p_val = OLM_exp1 %>% rstatix::t_test(DI ~ TreatAge, ref.group = "Aged Control", p.adjust.method = "holm") %>%
+  rstatix::add_xy_position() %>%
+  dplyr::mutate(y.position = y.position + c(-10, -7, -20)) %>%
+  dplyr::filter(p < 0.05)
+
+ggplot(OLM_exp1, aes(x = TreatAge, y = DI)) + 
+  geom_bar(  stat="summary", aes(fill=TreatAge)) +
+  geom_errorbar( stat='summary', aes(width=0.4, colour="lightblue")) + ylab("Discrimination Index") + xlab("") + geom_hline(yintercept=0, colour = "lightblue", linetype = 'dotted') +
+  geom_point(aes(colour = "lightblue"), position=position_jitterdodge(jitter.width = 0.25), size=2.5, alpha=1) +
+  ggprism::theme_prism(palette = "colorblind_safe") + ggprism::scale_fill_prism(palette = "colorblind_safe") + 
+  theme(legend.position = "none") 
+
+ggsave("../plots/behaviour/OLM/DIbar_Exp1.jpg", device = "jpeg", height = 5, width = 7.5)
+```
+
+# Compare OLM DIs Exp2
+```{r}
+#Experiment 2 only
+OLM_exp2 = OLM %>% dplyr::filter(Experiment == "Experiment 2")
+
+#Type III ANOVA as we suspect an interaction
+ANOVA = OLM_exp2 %>%
+   rstatix::anova_test(DI ~ Age*Treatment, white.adjust = T, type = "III")
+df_p_val = OLM_exp2 %>% rstatix::t_test(DI ~ TreatAge, ref.group = "Aged Control", p.adjust.method = "BH") %>%
+  rstatix::add_xy_position() %>%
+  dplyr::mutate(y.position = y.position + c(-10, -7, -20)) %>%
+  dplyr::filter(p < 0.05)
+
+ggplot(OLM_exp2, aes(x = TreatAge, y = DI)) + 
+  geom_bar(  stat="summary", aes(fill=TreatAge)) +
+  geom_errorbar( stat='summary', aes(width=0.4, colour="lightblue")) + ylab("Discrimination Index") + xlab("") + geom_hline(yintercept=0, colour = "lightblue", linetype = 'dotted') +
+  geom_point(aes(colour = "lightblue"), position=position_jitterdodge(jitter.width = 0.25), size=2.5, alpha=1) +
+  ggprism::theme_prism(palette = "colorblind_safe") + ggprism::scale_fill_prism(palette = "colorblind_safe") + 
+  theme(legend.position = "none") + annotate("text",  x=2.5, y=80, label = paste0("Age:Treatment Interaction p=", ANOVA[3,5]), size=5) +
+  add_pvalue(df_p_val, 
+               label = "{p.adj.signif}",
+                   remove.bracket = F, label.size = 7.5) + 
+    scale_y_continuous(breaks=seq(-25,100,25)) 
+
+ggsave("../plots/behaviour/OLM/DIbar_Exp2.jpg", device = "jpeg", height = 5, width = 7.5)
+```
+
+# Compare OLM Time Exploring Both Objects - Exp1
+```{r} 
+OLM_expl = read.csv("../data/behaviour/results/OLM/manualResults_shail_exploration.csv") %>%
+  dplyr::select(1:4) %>%
+  dplyr::rename(c("Young Control", "Young GW3965", "Aged Control", "Aged GW3965")) %>%
+  tidyr::gather(Group, DI, 1:4, factor_key=TRUE) %>%
+  dplyr::mutate(ID = 
+  toupper(c("10a", "10b", "10c", "10d", "10e", "11a", "11b", "11c", "11d", "11e", 
+            "C2T1", "C2T2", "C2T3", "C6T1", "C6T2", "C6T3", "C6T4", "C6T5",
+    "4a", "4b", "4c", "4d", "4e", "5a", "5b", "5c", "5d", "5e", 
+    "C4T1", "C4T2", "C4T3", "C4T1", "C7T2", "C7T3", "C7T4", "C7T5",
+     "6a", "6b", "6c", "6d", "7a", "7b", "7c", "7d", "8a", "9a",
+    "C3T1", "C3T2", "C3T3", "C8T1", "C8T2", "C8T3", "C8T4", "C8T5",
+    "1a", "1b", "1c", "1d", "2a", "2b", "2c", "2d", "3c", "3b"   
+    ,"C1T1", "C1T2", "C1T3", "C1T4", "C5T1", "C5T2", "C5T3", "C5T4"
+    ))) %>%
+    dplyr::filter(!is.na(OLM$DI)) %>%
+  dplyr::mutate(TreatAge = factor(Group, levels = c("Young Control", "Young GW3965","Aged Control", "Aged GW3965")),
+                Experiment = rep(c("Experiment 2","Experiment 1", "Experiment 2","Experiment 1", "Experiment 2","Experiment 1", "Experiment 2","Experiment 1"), times = c(10, 8, 10, 8, 10, 8, 10, 8))) %>%
+  tidyr::separate(Group, into = c("Age", "Treatment"), sep = " ")
+
+# Only Experiment 1
+OLM_expl_exp1 <- OLM_expl %>% dplyr::filter(Experiment == "Experiment 1")
+
+#Type III ANOVA as we suspect an interaction
+ANOVA = OLM_expl_exp1 %>%
+   rstatix::anova_test(DI ~ Age*Treatment, white.adjust = T, type = "III")
+df_p_val = OLM_expl_exp1 %>% rstatix::t_test(DI ~ TreatAge, ref.group = "Aged Control", p.adjust.method = "fdr") %>% 
+  rstatix::add_xy_position() %>%
+  dplyr::mutate(y.position = y.position + c(-8, -7, -7)) %>%
+  dplyr::filter(p < 0.05)
+
+ggplot(OLM_expl_exp1, aes(x = TreatAge, y = DI)) + 
+  geom_bar(  stat="summary", aes(fill=TreatAge)) +
+  geom_errorbar( stat='summary', aes(width=0.4, colour="lightblue")) + ylab("Time Exploring Either Object (s)") + xlab("") + geom_hline(yintercept=0, colour = "lightblue", linetype = 'dotted') +
+  geom_point(aes(colour = "lightblue"), position=position_jitterdodge(jitter.width = 0.25), size=2.5, alpha=1) +
+  ggprism::theme_prism(palette = "colorblind_safe") + ggprism::scale_fill_prism(palette = "colorblind_safe") + 
+  theme(legend.position = "none")
+
+ggsave("../plots/behaviour/OLM/exploration_bar_exp1.jpg", device = "jpeg", height = 5, width = 7.5)
+```
+
+# Compare OLM Time Exploring Both Objects - Exp2
+```{r}
+# Only Experiment 2
+OLM_expl_exp2 <- OLM_expl %>% dplyr::filter(Experiment == "Experiment 2")
+
+#Type III ANOVA as we suspect an interaction
+ANOVA = OLM_expl_exp2 %>%
+   rstatix::anova_test(DI ~ Age*Treatment, white.adjust = T, type = "III")
+df_p_val = OLM_expl_exp2 %>% rstatix::t_test(DI ~ TreatAge, ref.group = "Aged Control", p.adjust.method = "fdr") %>% 
+  rstatix::add_xy_position() %>%
+  dplyr::mutate(y.position = y.position + c(-8, -7, -7)) %>%
+  dplyr::filter(p < 0.05)
+
+ggplot(OLM_expl_exp2, aes(x = TreatAge, y = DI)) + 
+  geom_bar(  stat="summary", aes(fill=TreatAge)) +
+  geom_errorbar( stat='summary', aes(width=0.4, colour="lightblue")) + ylab("Time Exploring Either Object (s)") + xlab("") + geom_hline(yintercept=0, colour = "lightblue", linetype = 'dotted') +
+  geom_point(aes(colour = "lightblue"), position=position_jitterdodge(jitter.width = 0.25), size=2.5, alpha=1) +
+  ggprism::theme_prism(palette = "colorblind_safe") + ggprism::scale_fill_prism(palette = "colorblind_safe") + 
+  theme(legend.position = "none")
+
+ggsave("../plots/behaviour/OLM/exploration_bar_exp2.jpg", device = "jpeg", height = 5, width = 7.5)
+```
+
+# Habituation - Exp 2
+```{r}
+# Load automatic tracking data for all habituation sessions from experiment 2 
+olmFiles = list.files(path = "../data/behaviour/OLM/2", pattern = "*.xlsx", full.names = T, recursive=T) %>%
+            dplyr::filter(grepl("Export Files/", olmFiles))
+
+olmFiles = setNames(olmFiles, gsub("../data/behaviour/OLM/", "", dirname(dirname(olmFiles))))
+OLM_moved = lapply(olmFiles, function(session){ 
+             data = read_xlsx(session)
+             data$Session = basename(gsub("../results/OLM/", "", dirname(dirname(session))))
+             if(grepl("/2", session)){
+               if(nrow(data) == 42){
+                 #Remove an extra trial accidentally triggered with no mouse
+                 data = data[-41,]
+               }
+               data$Age = c(rep(c("Young", "Old", "Young", "Old", "Old", "Young", "Old", "Young"), 5), "Old")
+               data$Treatment = c(rep(c("Control", "Control", "GW3965", "GW3965", "Control",  "GW3965", "GW3965",  "Control",
+                                        "GW3965", "GW3965", "Control", "Control", "GW3965",  "Control", "Control", "GW3965"), 2), 
+                                  "Control", "Control", "GW3965", "GW3965", "Control",  "GW3965", "GW3965",  "Control", "GW3965")
+             }
+             data = data[,colnames(data) %in% c("Age","Treatment", "Distance moved Center-point Total cm", "Session")]
+             data$id = as.character(c(1:41))
+             return(data)
+               }) %>% bind_rows()
+colnames(OLM)[1] = "Distance"
+
+OLM_moved <- OLM_moved %>% 
+    dplyr::mutate(TreatAge = paste0(Age, " ", Treatment),
+                  Session = as.numeric(gsub("Hab", "", Session))) %>%
+    dplyr::filter(!Session %in% c("Test", "Training"))
+OLM$
+
+anova = OLM_moved %>%
+   rstatix::anova_test(wid = id, dv = Distance,
+  within = c(Session), between = c(Age, Treatment))
+df_p_val = data.frame(
+  xmin = 1,
+  xmax = 7,
+  y.position = c(5000, 4800, 4600, 4400),
+  p = anova$ANOVA[anova$ANOVA$Effect %in% c("Session", "Age", "Treatment", "Age:Treatment"),]$p,
+  Effect = anova$ANOVA[anova$ANOVA$Effect %in% c("Session", "Age", "Treatment", "Age:Treatment"),]$Effect
+) %>%
+  dplyr::mutate(p = ifelse(p < 0.001, "***", "ns"),
+                Effect = gsub("Session", "Habituation Session",Effect))
+
+# Plot distance moved
+ggplot(OLM, aes(x = Session, y = Distance)) +
+  stat_summary(aes(colour = TreatAge), fun = mean, geom = "line") +
+  stat_summary(aes(colour = TreatAge), fun.data = mean_cl_boot, geom = "errorbar", width = 0.1)+
+  ggprism::theme_prism(palette = "colorblind_safe") + ggprism::scale_colour_prism(palette = "colorblind_safe")  + 
+  ylab("Distance Moved (cm)") + xlab("Habituation Session") +
+  scale_x_continuous(breaks = c(1:7)) + add_pvalue(df_p_val, 
+               label = "{Effect}: {p}",
+               remove.bracket = T, label.size = 4, x = 4, y.position = "y.position", xmin="xmin", xmax = "xmax", tip.length = 0)  + ylim(NA, 5000) + theme(legend.position = c(0.4, 1.05), legend.direction = "horizontal", legend.text = element_text(size=10), plot.margin = margin(t=25))
+ggsave("../plots/behaviour/OLM/distance_line_exp2.jpg", device = "jpeg", height = 5, width = 6)
+```
+
+# CFC - Did not really work, massive variability, but some indication of rejuvenation
+```{r}
+cfc = readr::read_csv("../results/CFC/CFC Aut Wood Lab Settings.csv") %>%
+      tidyr::gather(cfc, Group, percent.freezing, 1:4, factor_key=TRUE) %>%
+      dplyr::filter(!is.na(percent.freezing)) %>%
+      dplyr::mutate(TreatAge = factor(Group, levels = c("Young Control", "Young GW3965","Aged Control", "Aged GW3965"))) %>%
+      tidyr::separate(cfc, Group, into = c("Age", "Treatment"), sep = " ") %>%
+      dplyr::mutate(Experiment = rep(c("Experiment 2","Experiment 1", "Experiment 2","Experiment 1", "Experiment 2","Experiment 1", "Experiment 2","Experiment 1"), times = c(7, 9, 7, 9, 7, 9, 7, 10))) %>%
+      as.data.frame()
+
+#Only exp 2
+cfc_exp2 = cfc %>% dplyr::filter(Experiment == "Experiment 2")
+
+# Anova (Type III as we suspect an interaction)
+anova = cfc_exp2 %>%
+   rstatix::anova_test(percent.freezing ~ Age*Treatment, type = "III", white.adjust = F)
+df_p_val = cfc_exp2 %>% rstatix::pairwise_t_test(percent.freezing ~ TreatAge, ref.group = "Aged Control", p.adjust.method = "fdr") %>% 
+  rstatix::add_xy_position() %>%
+  dplyr::mutate(y.position = y.position + c(4, 9, 14)) %>%
+  dplyr::filter(p < 0.05)
+
+# Plot
+ggplot(cfc_exp2, aes(x = TreatAge, y = percent.freezing)) + 
+  stat_summary(fun.y=mean, geom="point", shape="\U2014", size=9, colour="blue") + ylab("% Freezing") + xlab("") + 
+  geom_point(aes(colour = TreatAge), position=position_jitterdodge(jitter.width = 1), size=2, alpha=1) +
+  ggprism::theme_prism(palette = "colorblind_safe") + ggprism::scale_colour_prism(palette = "colorblind_safe")  + theme(legend.position = "none") + 
+  scale_y_continuous(breaks=seq(0,100,25), limits=c(0,110)) 
+ggsave("../plots/behaviour/CFC/Freezing_exp2.jpg", device = "jpeg", height = 5, width = 7.5)
+
+# Bar plot alternative
+ggplot(cfc_exp2, aes(x = TreatAge, y = percent.freezing)) + 
+  geom_bar(  stat="summary", aes(fill=TreatAge)) +
+  geom_errorbar( stat='summary', aes(width=0.4, colour="lightblue")) + ylab("% Freezing") + xlab("") + geom_hline(yintercept=0, colour = "lightblue", linetype = 'dotted') +
+  geom_point(aes(colour = "lightblue"), position=position_jitterdodge(jitter.width = 0.25), size=2.5, alpha=1) +
+  ggprism::theme_prism(palette = "colorblind_safe") + ggprism::scale_fill_prism(palette = "colorblind_safe")  + 
+    scale_y_continuous(breaks=seq(-25,100,25))+ theme(legend.position = "none")
+ggsave("../plots/behaviour/CFC/Freezing_bar_exp2.jpg", device = "jpeg", height = 5, width = 7.5)
+```
+
+
+## ymaze results - Again did not really work with massive variability
+
+```{r}
+ymaze = read_excel("../data/behaviour/ymaze/All.xlsx") %>%
+        dplyr::filter(!Zone %in% c("For Center-point in Triangle", "For Center-point in Central arm")) %>%
+        dplyr::select(c(3, 4, 17, 19)) 
+        
+ymaze = do.call(rbind,
+        lapply(seq(1, nrow(ymaze), 2), function(i){
+          x <- ymaze[ i:(i + 1), , drop = FALSE]
+          res <- colSums(x[,3:4], na.rm = T)
+          group = as.character(x[1,1:2])
+          res <- c(group, res)
+          return(res)
+        })) %>% as.data.frame() %>%
+        rename(c("Age", "Treatment", "Novel", "Old")) %>%
+        dplyr::mutate(TreatAge = paste0(Age, " ", Treatment)) %>%
+        dplyr::mutate(TreatAge = gsub("Drug","GW3965",TreatAge)) %>%
+        dplyr::mutate(TreatAge = gsub("Old","Aged",TreatAge)) %>%
+        dplyr::mutate(TreatAge =  factor(TreatAge, levels = c("Young Control", "Young GW3965", "Aged Control", "Aged GW3965"))) %>%
+        dplyr::mutate(Old = as.numeric(Old)) %>%
+        dplyr::mutate(DI = (Novel - Old)*100 / (Novel + Old)) %>%
+        dplyr::mutate(Experiment = rep(c("Experiment 1", "Experiment 2"), times = c(41, 28)))
+
+#Only Exp2
+ymaze_exp2 = ymaze %>% dplyr::filter(Experiment == "Experiment 2")
+
+ANOVA = ymaze_exp2 %>%
+   rstatix::anova_test(DI ~ Age*Treatment, white.adjust = T, type = "II")
+df_p_val = ymaze_exp2 %>% rstatix::t_test(DI ~ TreatAge, ref.group = "Aged Control", p.adjust.method = "fdr") %>% 
+  rstatix::add_xy_position() %>%
+  dplyr::mutate(y.position = y.position + c(-8, -7, -7)) %>%
+  dplyr::filter(p < 0.05)
+
+# Plot
+ggplot(ymaze, aes(x = TreatAge, y = DI)) + 
+  geom_bar(  stat="summary", aes(fill=TreatAge)) +
+  geom_errorbar( stat='summary', aes(width=0.4, colour="lightblue")) + ylab("Discrimination Index") + xlab("") + geom_hline(yintercept=0, colour = "lightblue", linetype = 'dotted') +
+  geom_point(aes(colour = "lightblue"), position=position_jitterdodge(jitter.width = 0.25), size=2.5, alpha=1) +
+  ggprism::theme_prism(palette = "colorblind_safe") + ggprism::scale_fill_prism(palette = "colorblind_safe") + 
+  theme(legend.position = "none")
+
+ggsave("../plots/ymaze/DItime_moving.jpg", device = "jpeg", height = 5, width = 6.5)
+
+##Now for distance
+df_p_val = ymaze_exp2 %>%
+   rstatix::anova_test(DIdist ~ Age*Treatment) %>%
+  dplyr::mutate(x = c(1,2,3),
+                xmin = c(1,1,1),
+                xmax = c(4,4,4),
+                y.position = c(max(DIdist) + 0.05,max(DIdist) + 0.15,max(DIdist) + 0.25),
+                p = signif(p, 2)) %>%
+  dplyr::filter(p < 0.05)
+
+ggplot(ymaze_exp2, aes(x = TreatAge, y = DIdist)) + 
+  geom_boxplot(aes(colour = TreatAge)) + ylab("DI (Distance)") + xlab("") +
+  geom_point(aes(colour = TreatAge), position=position_jitterdodge(jitter.width = 0.1), size=2, alpha=1) +
+  ggprism::theme_prism(palette = "colorblind_safe") + ggprism::scale_colour_prism(palette = "colorblind_safe") + 
+  ggprism::add_pvalue(df_p_val, 
+               xmin = "xmin", 
+               xmax = "xmax",
+               label = "{Effect} p = {p}",
+               tip.length = 0) + ggplot2::theme(axis.text.x = element_text(angle = -45, vjust = 0.25, hjust=0.05))
+
+ggsave("../plots/behaviour/ymaze/DIdistBox.jpg", device = "jpeg", height = 5, width = 6.5)
+```
