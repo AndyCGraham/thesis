@@ -297,7 +297,6 @@ ggplot(cfc_exp2, aes(x = TreatAge, y = percent.freezing)) +
 ggsave("../plots/behaviour/CFC/Freezing_bar_exp2.jpg", device = "jpeg", height = 5, width = 7.5)
 ```
 
-
 ## ymaze results - Again did not really work with massive variability
 
 ```{r}

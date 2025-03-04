@@ -12,9 +12,9 @@ This repository contains the code used to produce the thesis of Andrew C Graham.
 The multiome analysis files were run in the following order:
 
 1. `scripts/multiome/bash/run_process_nf.sh` - Process multiome data from raw reads to RNA and ATAC count matrices for each sample (using cellranger-arc), corrected for ambient RNA contamination with cellbender.
-2. `scripts/multiome/R/seuratQC.rmd` - Basic QC and consensus clustering of scMultiome Data
-3. `scripts/multiome/python/annotationTRVAE.ipynb` - Annotation of scMultiome Data using Allen Brain atlas reference dataset
-4. `scripts/multiome/R/seuratAnalysis.rmd` - In depth analysis of different celltypes
+2. `scripts/multiome/R/seurat_QC.rmd` - Basic QC and consensus clustering of scMultiome Data
+3. `scripts/multiome/python/annotation_TRVAE.ipynb` - Annotation of scMultiome Data using Allen Brain atlas reference dataset
+4. `scripts/multiome/R/seurat_analysis.rmd` - In depth analysis of different celltypes
 5. `scripts/multiome/R/PRINT_footprinting.rmd` - Footprinting analysis of DG granule cells, required for GRN inference
 6. `scripts/multiome/R/CA1_PRINT_footprinting.rmd` - Footprinting analysis of CA1 pyramidal neurons, required for GRN inference
 7. `scripts/multiome/R/CA1_GRN_inference.Rmd` - GRN inference of CA1 pyramidal neurons

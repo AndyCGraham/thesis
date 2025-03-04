@@ -72,7 +72,7 @@ cb_pallette = c("#777a78", "#E4E1E3FF", "#F6222EFF", "#FE00FAFF", "#16FF32FF", "
 
 First lets prepare some TF motifs for later
 ```{r}
-source("processHOCOMOCO12motifs.R")
+source("process_HOCOMOCO_motifs.R")
 ```
 
 Lets load the Multiome Object and the Reference-Based Cell Annotations From Python
