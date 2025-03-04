@@ -35,9 +35,9 @@ The multiome analysis files were run in the following order:
         D --> G[SEAcells_ExNeu.ipynb];
         G --> H[SCENIC+.ipynb];
         D --> I[preprocess_signac_for_dictys.sh];
-        H --> J[run_dictys_nf.sh];
-        E --> K[CA1_GRN_inference.Rmd];
-        F --> L[DG_GRN_inference.Rmd];
+        I --> J[run_dictys_nf.sh];
+        F --> K[CA1_GRN_inference.Rmd];
+        E --> L[DG_GRN_inference.Rmd];
         L --> M[dictys_static_analysis_ExNeu.ipynb]
 ```
 
