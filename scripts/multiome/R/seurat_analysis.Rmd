@@ -2132,14 +2132,14 @@ Results = DoIntegratedAnalysis(MULTIobj = subset(Multiome, idents = c("ExNeu.CA1
 
 Results = DoIntegratedAnalysis(MULTIobj = subset(Multiome, idents = c("ExNeu.CA1.Dor")), MULTIcontrasts = "GroupVarset-GroupNo", Factor = "IEGexpressing", contrastNames = "IEGexpressing",Genesets = GOterms, DEGthreshold = 0.025, DARthreshold = 0.05, save_to = file.path(clusters,Cluster, "/clusters/CA1.Dor/"), DARthresh = list(0.05, 0.3), pseudobulk = F, addMotifs = F, ResultsTable = FALSE, CollapsePathways=T)
 
-rtracklayer::export.bed(peaks, paste0(objects, paste0("../../SCENIC/", Cluster, "/objects/ConsensusPeaks.bed")))
+rtracklayer::export.bed(peaks, paste0(objects, paste0("../../data/SCENIC/", Cluster, "/objects/ConsensusPeaks.bed")))
 
 saveRDS(Multiome, file = paste0(clusters,Cluster, "/clusters/CA1.Dor/objects/Multiome.rds"))
 
 ####----------Export for SCENIC
 ##Set Up Folders
-dir.create(file.path("../../SCENIC/", Cluster, "/objects/"), showWarnings = FALSE, recursive =T)
-dir.create(file.path("../../SCENIC/", Cluster, "/pycistopic/"), showWarnings = FALSE, recursive =T)
+dir.create(file.path("../../data/SCENIC/", Cluster, "/objects/"), showWarnings = FALSE, recursive =T)
+dir.create(file.path("../../data/SCENIC/", Cluster, "/pycistopic/"), showWarnings = FALSE, recursive =T)
 
 ##Transfer UMAP and PCA
 Multiome@reductions$umap@cell.embeddings = Multiome@reductions$umap@cell.embeddings[match(colnames(Multiome),rownames(Multiome@reductions$umap@cell.embeddings)),]
@@ -2148,11 +2148,11 @@ Multiome@reductions$pca@global = TRUE
 
 # Save the RNA object
 sceRNA <- as.SingleCellExperiment(Multiome, assay = c("RNA"))
-zellkonverter::writeH5AD(sceRNA, paste0("../../SCENIC/", Cluster, "/objects/RNA.h5ad") , X_name = 'counts')
+zellkonverter::writeH5AD(sceRNA, paste0("../../data/SCENIC/", Cluster, "/objects/RNA.h5ad") , X_name = 'counts')
 
 # Save the ATAC object
 sceATAC <- as.SingleCellExperiment(Multiome, assay = c("specific_peaks"))
-zellkonverter::writeH5AD(sceATAC, paste0("../../SCENIC/", Cluster, "/objects/ATAC.h5ad"), X_name = 'counts')
+zellkonverter::writeH5AD(sceATAC, paste0("../../data/SCENIC/", Cluster, "/objects/ATAC.h5ad"), X_name = 'counts')
                          
 rm(sceRNA, sceATAC)
 ```
@@ -2737,11 +2737,11 @@ plan("sequential")
 
 ```{r}
 ##Set Up Folders
-dir.create(file.path("../../SCENIC/ExNeu/objects/"), showWarnings = FALSE, recursive =T)
-dir.create(file.path("../../SCENIC/ExNeu/pycistopic/"), showWarnings = FALSE, recursive =T)
+dir.create(file.path("../../data/SCENIC/ExNeu/objects/"), showWarnings = FALSE, recursive =T)
+dir.create(file.path("../../data/SCENIC/ExNeu/pycistopic/"), showWarnings = FALSE, recursive =T)
 
 ###Export shared peaks to bed file
-rtracklayer::export.bed(peaks, paste0(objects, paste0("../../SCENIC/", Cluster, "/objects/ConsensusPeaks.bed")))
+rtracklayer::export.bed(peaks, paste0(objects, paste0("../../data/SCENIC/", Cluster, "/objects/ConsensusPeaks.bed")))
 
 ##Transfer UMAP and PCA
 Multiome@reductions$umap@cell.embeddings = Multiome@reductions$umap@cell.embeddings[match(colnames(Multiome),rownames(Multiome@reductions$umap@cell.embeddings)),]
@@ -2750,11 +2750,11 @@ Multiome@reductions$pca@global = TRUE
 
 # Save the RNA object
 sceRNA <- as.SingleCellExperiment(Multiome, assay = c("RNA"))
-zellkonverter::writeH5AD(sceRNA, paste0("../../SCENIC/ExNeu/objects/RNA.h5ad") , X_name = 'counts')
+zellkonverter::writeH5AD(sceRNA, paste0("../../data/SCENIC/ExNeu/objects/RNA.h5ad") , X_name = 'counts')
 
 # Save the ATAC object
 sceATAC <- as.SingleCellExperiment(Multiome, assay = c("specific_peaks"))
-zellkonverter::writeH5AD(sceATAC, paste0("../../SCENIC/ExNeu/objects/ATAC.h5ad"), X_name = 'counts')
+zellkonverter::writeH5AD(sceATAC, paste0("../../data/SCENIC/ExNeu/objects/ATAC.h5ad"), X_name = 'counts')
                          
 rm(sceRNA, sceATAC)
 ```
@@ -2774,7 +2774,7 @@ peaks <- CallPeaks(Multiome,
 
 
 #Make folders
-DictysDir = "../../dictys"
+DictysDir = "../../data/dictys"
 dir.create(DictysDir)
 dir.create(paste0(DictysDir, "/ExNeu/"))
 dir.create(paste0(DictysDir, "/ExNeu/samples/"))

@@ -19,9 +19,11 @@ The multiome analysis files were run in the following order:
 6. `scripts/multiome/R/CA1_PRINT_footprinting.rmd` - Footprinting analysis of CA1 pyramidal neurons, required for GRN inference
 7. `scripts/multiome/R/CA1_GRN_inference.Rmd` - GRN inference of CA1 pyramidal neurons
 8. `scripts/multiome/R/DG_GRN_inference.Rmd` - GRN inference of DG granule cells
-9. `scripts/multiome/python/SCENIC+.ipynb` - GRN inference with SCENIC+
-10. `scripts/multiome/bash/preprocess_signac_for_dictys.sh` - Prepare data for GRN inference with dictys
-11. `scripts/multiome/nf/run_dictys_nf.sh` - GRN inference with dictys
+9. `scripts/multiome/python/SEAcells_ExNeu.ipynb` - Computation of meta SEAcells to aid SCENIC+ analysis
+10. `scripts/multiome/python/SCENIC+_ExNeu.ipynb` - GRN inference with SCENIC+
+11. `scripts/multiome/bash/preprocess_signac_for_dictys.sh` - Prepare data for GRN inference with dictys
+12. `scripts/multiome/nf/run_dictys_nf.sh` - GRN inference with dictys
+13. `scripts/multiome/python/dictys_static_analysis_ExNeu.ipynb` - Interactive of GRNs infered with dictys
 
 ```mermaid
     graph TD;
@@ -30,11 +32,13 @@ The multiome analysis files were run in the following order:
         C --> D[seuratAnalysis.rmd];
         D --> E[PRINT_footprinting.rmd];
         D --> F[CA1_PRINT_footprinting.rmd];
-        D --> G[SCENIC+.ipynb];
-        D --> H[preprocess_signac_for_dictys.sh];
-        H --> I[run_dictys_nf.sh];
-        E --> J[CA1_GRN_inference.Rmd];
-        F --> K[DG_GRN_inference.Rmd];
+        D --> G[SEAcells_ExNeu.ipynb];
+        G --> H[SCENIC+.ipynb];
+        D --> I[preprocess_signac_for_dictys.sh];
+        H --> J[run_dictys_nf.sh];
+        E --> K[CA1_GRN_inference.Rmd];
+        F --> L[DG_GRN_inference.Rmd];
+        L --> M[dictys_static_analysis_ExNeu.ipynb]
 ```
 
 Statistical analysis of imaging results is in file `scripts/imaging/imaging_analysis.rmd`.
