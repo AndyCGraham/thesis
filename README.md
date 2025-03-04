@@ -23,7 +23,7 @@ The multiome analysis files were run in the following order:
 10. `scripts/multiome/python/SCENIC+_ExNeu.ipynb` - GRN inference with SCENIC+
 11. `scripts/multiome/bash/preprocess_signac_for_dictys.sh` - Prepare data for GRN inference with dictys
 12. `scripts/multiome/nf/run_dictys_nf.sh` - GRN inference with dictys
-13. `scripts/multiome/python/dictys_static_analysis_ExNeu.ipynb` - Interactive of GRNs infered with dictys
+13. `scripts/multiome/python/dictys_static_analysis_ExNeu.ipynb` - Interactive analysis of GRNs infered with dictys
 
 ```mermaid
     graph TD;
