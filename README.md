@@ -38,7 +38,7 @@ The multiome analysis files were run in the following order:
         I --> J[run_dictys_nf.sh];
         F --> K[CA1_GRN_inference.Rmd];
         E --> L[DG_GRN_inference.Rmd];
-        L --> M[dictys_static_analysis_ExNeu.ipynb]
+        J --> M[dictys_static_analysis_ExNeu.ipynb]
 ```
 
 Statistical analysis of imaging results is in file `scripts/imaging/imaging_analysis.rmd`.
