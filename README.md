@@ -24,6 +24,7 @@ The multiome analysis files were run in the following order:
 11. `scripts/multiome/bash/preprocess_signac_for_dictys.sh` - Prepare data for GRN inference with dictys
 12. `scripts/multiome/nf/run_dictys_nf.sh` - GRN inference with dictys
 13. `scripts/multiome/python/dictys_static_analysis_ExNeu.ipynb` - Interactive analysis of GRNs infered with dictys
+13. `scripts/multiome/python/visium.ipynb` - Analysis of publicly available visium data, annotated using RNA assay of Multiome data.
 
 ```mermaid
     graph TD;
@@ -33,12 +34,13 @@ The multiome analysis files were run in the following order:
         D --> E[PRINT_footprinting.rmd];
         D --> F[CA1_PRINT_footprinting.rmd];
         D --> G[SEAcells_ExNeu.ipynb];
-        G --> H[SCENIC+.ipynb];
+        D --> H[SEAcells_ExNeu.ipynb];
         D --> I[preprocess_signac_for_dictys.sh];
-        I --> J[run_dictys_nf.sh];
-        F --> K[CA1_GRN_inference.Rmd];
-        E --> L[DG_GRN_inference.Rmd];
-        J --> M[dictys_static_analysis_ExNeu.ipynb]
+        G --> J[SCENIC+.ipynb];
+        I --> K[run_dictys_nf.sh];
+        F --> L[CA1_GRN_inference.Rmd];
+        E --> M[DG_GRN_inference.Rmd];
+        K --> N[dictys_static_analysis_ExNeu.ipynb]
 ```
 
 Statistical analysis of imaging results is in file `scripts/imaging/imaging_analysis.rmd`.
