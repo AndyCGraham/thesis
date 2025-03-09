@@ -34,7 +34,7 @@ The multiome analysis files were run in the following order:
         D --> E[PRINT_footprinting.rmd];
         D --> F[CA1_PRINT_footprinting.rmd];
         D --> G[SEAcells_ExNeu.ipynb];
-        D --> H[SEAcells_ExNeu.ipynb];
+        D --> H[visium.ipynb];
         D --> I[preprocess_signac_for_dictys.sh];
         G --> J[SCENIC+.ipynb];
         I --> K[run_dictys_nf.sh];
