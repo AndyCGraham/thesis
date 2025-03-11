@@ -61,10 +61,9 @@ use_python(path_to_python)
 options(future.globals.maxSize = 10000 * 1024^2)
 
 # Some relative paths
-cellRanger = "../../../cellrangerOutput/"
-clusters = "../clusters/"
-plots = "../plots/"
-objects =  "../objects/"
+clusters = "../../../results/multiome/seurat_analysis/clusters/"
+plots = "../../../results/multiome/seurat_analysis/plots/"
+objects =  "../../../data/multiome/seurat_analysis/objects/"
 
 # Colour palette
 cb_pallette = c("#777a78", "#E4E1E3FF", "#F6222EFF", "#FE00FAFF", "#16FF32FF", "#3283FEFF", "#FEAF16FF", "#B00068FF", "#1CFFCEFF", "#90AD1CFF", "#2ED9FFFF", "#DEA0FDFF", "#AA0DFEFF", "#F8A19FFF", "#325A9BFF", "#C4451CFF", "#1C8356FF", "#85660DFF", "#B10DA1FF", "#FBE426FF", "#1CBE4FFF", "#FA0087FF", "#FC1CBFFF", "#F7E1A0FF", "#C075A6FF", "#782AB6FF", "#AAF400FF", "#BDCDFFFF", "#f2b672", "#B5EFB5FF", "#f75c02", "#5c0404", "#160459", "#FFFFCC", "#DF65B0", "#B3E2CD", "#FBB4AE", "#1F78B4", "#BDC9E1","#FDAE61", "#FFFF99","#02818A", "#F1B6DA","#DFC27D")
@@ -78,7 +77,7 @@ source("process_HOCOMOCO_motifs.R")
 Lets load the Multiome Object and the Reference-Based Cell Annotations From Python
 ```{r}
 Multiome = readRDS(paste0(objects, "Multiome.rds"))
-annotations = read.csv("../../cellAnnotation/analysis/MultiomeMetadataAnnotated.csv")
+annotations = read.csv("../../data/cellAnnotation/MultiomeMetadataAnnotated.csv")
 
 Multiome$scVI_annots = annotations$transf_cell_type
 compareAnnots = as.data.frame(table(Idents(Multiome), Multiome$scVI_annots))
@@ -1471,7 +1470,7 @@ DotPlot(Multiome, group.by = "Cluster_ID", features = c("Fos", "Arc", "Egr1"), a
 
 ## Download some LTP-associated genes to use as a gene-set
 ```{bash}
-curl "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5319997/bin/DataSheet1.XLSX" -o "../objects/geneSets/Chen_L-LTPgenes.XLSX"
+curl "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5319997/bin/DataSheet1.XLSX" -o "../../../results/multiome/seurat_analysis/objects/geneSets/Chen_L-LTPgenes.XLSX"
 ```
 
 ## Cluster Diff Exp
@@ -1853,7 +1852,7 @@ peakCounts = peakCounts[Matrix::rowSums(peakCounts > 0) > (ACCthreshold * ncol(p
 peakMatrix = Multiome[["specific_peaks"]]["data"][rownames(Multiome[["specific_peaks"]]) %in% rownames(peakCounts),]
 dimNames = dimnames(peakMatrix)
 accessiblePeaks = rownames(peakMatrix)
-saveRDS(accessiblePeaks, file = "../../PRINT/CA1/accessiblePeaks.rds")
+saveRDS(accessiblePeaks, file = "../../../data/PRINT/CA1/accessiblePeaks.rds")
 
 # Make chromvar object
 accessiblePeaks_granges = GenomicRanges::GRanges(seqnames=sapply(strsplit(accessiblePeaks, "-"), `[`, 1),
@@ -1914,7 +1913,7 @@ annotation = Multiome[["specific_peaks"]]@annotation
 
 # Save data and run prinf footprinting (in PRINT_Footprinting.rmd)
 save(chromvarMat, MotifMat, rnaMatrix, Multiome, peakMatrix, chromvarMat, chromvar.obj, TFnames, dev, variability, GOterms,annotation, file = paste0(clusters,Cluster, "/clusters/objects/regulon.rds"))
-dir.create("../../PRINT/CA1/")
+dir.create("../../../data/PRINT/CA1/")
 ```
 
 ## Now lets focus on CA1 Neurons, as a lot seems to be going on there
@@ -2132,14 +2131,14 @@ Results = DoIntegratedAnalysis(MULTIobj = subset(Multiome, idents = c("ExNeu.CA1
 
 Results = DoIntegratedAnalysis(MULTIobj = subset(Multiome, idents = c("ExNeu.CA1.Dor")), MULTIcontrasts = "GroupVarset-GroupNo", Factor = "IEGexpressing", contrastNames = "IEGexpressing",Genesets = GOterms, DEGthreshold = 0.025, DARthreshold = 0.05, save_to = file.path(clusters,Cluster, "/clusters/CA1.Dor/"), DARthresh = list(0.05, 0.3), pseudobulk = F, addMotifs = F, ResultsTable = FALSE, CollapsePathways=T)
 
-rtracklayer::export.bed(peaks, paste0(objects, paste0("../../data/SCENIC/", Cluster, "/objects/ConsensusPeaks.bed")))
+rtracklayer::export.bed(peaks, paste0(objects, paste0("../../../data/SCENIC/", Cluster, "/objects/ConsensusPeaks.bed")))
 
 saveRDS(Multiome, file = paste0(clusters,Cluster, "/clusters/CA1.Dor/objects/Multiome.rds"))
 
 ####----------Export for SCENIC
 ##Set Up Folders
-dir.create(file.path("../../data/SCENIC/", Cluster, "/objects/"), showWarnings = FALSE, recursive =T)
-dir.create(file.path("../../data/SCENIC/", Cluster, "/pycistopic/"), showWarnings = FALSE, recursive =T)
+dir.create(file.path("../../../data/SCENIC/", Cluster, "/objects/"), showWarnings = FALSE, recursive =T)
+dir.create(file.path("../../../data/SCENIC/", Cluster, "/pycistopic/"), showWarnings = FALSE, recursive =T)
 
 ##Transfer UMAP and PCA
 Multiome@reductions$umap@cell.embeddings = Multiome@reductions$umap@cell.embeddings[match(colnames(Multiome),rownames(Multiome@reductions$umap@cell.embeddings)),]
@@ -2148,11 +2147,11 @@ Multiome@reductions$pca@global = TRUE
 
 # Save the RNA object
 sceRNA <- as.SingleCellExperiment(Multiome, assay = c("RNA"))
-zellkonverter::writeH5AD(sceRNA, paste0("../../data/SCENIC/", Cluster, "/objects/RNA.h5ad") , X_name = 'counts')
+zellkonverter::writeH5AD(sceRNA, paste0("../../../data/SCENIC/", Cluster, "/objects/RNA.h5ad") , X_name = 'counts')
 
 # Save the ATAC object
 sceATAC <- as.SingleCellExperiment(Multiome, assay = c("specific_peaks"))
-zellkonverter::writeH5AD(sceATAC, paste0("../../data/SCENIC/", Cluster, "/objects/ATAC.h5ad"), X_name = 'counts')
+zellkonverter::writeH5AD(sceATAC, paste0("../../../data/SCENIC/", Cluster, "/objects/ATAC.h5ad"), X_name = 'counts')
                          
 rm(sceRNA, sceATAC)
 ```
@@ -2646,7 +2645,7 @@ chromvarMat[is.na(chromvarMat)] = 0
 save(chromvarMat, MotifMat, rnaMatrix, Multiome, peakMatrix, chromvarMat, chromvar.obj, TFnames, dev, variability, GOterms,annotation, file = "regulon.rds")
 
 ## Save accessible peak names from PRINT
-save(accessiblePeaks, file = "../../PRINT/DG/accessiblePeaks.rds")
+save(accessiblePeaks, file = "../../../data/PRINT/DG/accessiblePeaks.rds")
 ```
 
 ### SCENIC+ and dictys - all ExNeu
@@ -2737,11 +2736,11 @@ plan("sequential")
 
 ```{r}
 ##Set Up Folders
-dir.create(file.path("../../data/SCENIC/ExNeu/objects/"), showWarnings = FALSE, recursive =T)
-dir.create(file.path("../../data/SCENIC/ExNeu/pycistopic/"), showWarnings = FALSE, recursive =T)
+dir.create(file.path("../../../data/SCENIC/ExNeu/objects/"), showWarnings = FALSE, recursive =T)
+dir.create(file.path("../../../data/SCENIC/ExNeu/pycistopic/"), showWarnings = FALSE, recursive =T)
 
 ###Export shared peaks to bed file
-rtracklayer::export.bed(peaks, paste0(objects, paste0("../../data/SCENIC/", Cluster, "/objects/ConsensusPeaks.bed")))
+rtracklayer::export.bed(peaks, paste0(objects, paste0("../../../data/SCENIC/", Cluster, "/objects/ConsensusPeaks.bed")))
 
 ##Transfer UMAP and PCA
 Multiome@reductions$umap@cell.embeddings = Multiome@reductions$umap@cell.embeddings[match(colnames(Multiome),rownames(Multiome@reductions$umap@cell.embeddings)),]
@@ -2750,11 +2749,11 @@ Multiome@reductions$pca@global = TRUE
 
 # Save the RNA object
 sceRNA <- as.SingleCellExperiment(Multiome, assay = c("RNA"))
-zellkonverter::writeH5AD(sceRNA, paste0("../../data/SCENIC/ExNeu/objects/RNA.h5ad") , X_name = 'counts')
+zellkonverter::writeH5AD(sceRNA, paste0("../../../data/SCENIC/ExNeu/objects/RNA.h5ad") , X_name = 'counts')
 
 # Save the ATAC object
 sceATAC <- as.SingleCellExperiment(Multiome, assay = c("specific_peaks"))
-zellkonverter::writeH5AD(sceATAC, paste0("../../data/SCENIC/ExNeu/objects/ATAC.h5ad"), X_name = 'counts')
+zellkonverter::writeH5AD(sceATAC, paste0("../../../data/SCENIC/ExNeu/objects/ATAC.h5ad"), X_name = 'counts')
                          
 rm(sceRNA, sceATAC)
 ```
@@ -2774,7 +2773,7 @@ peaks <- CallPeaks(Multiome,
 
 
 #Make folders
-DictysDir = "../../data/dictys"
+DictysDir = "../../../data/dictys"
 dir.create(DictysDir)
 dir.create(paste0(DictysDir, "/ExNeu/"))
 dir.create(paste0(DictysDir, "/ExNeu/samples/"))

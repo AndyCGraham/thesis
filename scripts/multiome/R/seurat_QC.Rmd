@@ -54,10 +54,10 @@ use_python(path_to_python)
 ##Set Settings
 options(future.globals.maxSize = 10000 * 1024^2)
 
-cellRanger = "../../../cellrangerOutput/"
-clusters = "../clusters/"
-plots = "../plots/"
-objects =  "../objects/"
+cellRanger = "../../../data/processed/cellrangerOutput/"
+clusters = "../../../results/multiome/seurat_analysis/clusters/"
+plots = "../../../results/multiome/seurat_analysis/plots/"
+objects =  "../../../data/multiome/seurat_analysis/objects/"
 ```
 
 ```{r}
@@ -93,8 +93,8 @@ seqlevelsStyle(annotation) <- "UCSC"
 save(annotation, file = paste0(objects, "musAnnotation.rds"))
 
 ## Load Data for All Samples
-RNAsamples = Sys.glob(file.path("../../../processedData/Multiome/cellBenderOutput", '*/CellbenderOutput_filtered.h5'))
-ATACsamples = Sys.glob(file.path("../../../processedData/Multiome/CellRangerARC/", '*/outs/raw_feature_bc_matrix.h5'))
+RNAsamples = Sys.glob(file.path(cellRanger, "cellBenderOutput", '*/CellbenderOutput_filtered.h5'))
+ATACsamples = Sys.glob(file.path(cellRanger, "CellRangerARC/", '*/outs/raw_feature_bc_matrix.h5'))
 names(RNAsamples) = basename(dirname(RNAsamples))
 names(ATACsamples) = basename(dirname(dirname(ATACsamples)))
 
@@ -461,7 +461,7 @@ saveRDS(Multiome, file = paste0(objects, "Multiome.rds"))
 
 ```{r}
 ##Set Up Folders
-dir.create(file.path("../../cellAnnotation/objects/obj/"), showWarnings = FALSE)
+dir.create(file.path("../../../data/cellAnnotation/objects/obj/"), showWarnings = FALSE)
 
 ##Transfer UMAP and PCA
 Multiome@reductions$umap@cell.embeddings = Multiome@reductions$umap@cell.embeddings[match(colnames(Multiome),rownames(Multiome@reductions$umap@cell.embeddings)),]
@@ -470,5 +470,5 @@ Multiome@reductions$pca@global = TRUE
 
 # Save the RNA object
 sceMultiome <- as.SingleCellExperiment(Multiome, assay = c("RNA"))
-zellkonverter::writeH5AD(sceMultiome, "../../cellAnnotation/objects/obj/Multiome.h5ad", X_name = 'counts')
+zellkonverter::writeH5AD(sceMultiome, "../../../data/cellAnnotation/objects/obj/Multiome.h5ad", X_name = 'counts')
 ```

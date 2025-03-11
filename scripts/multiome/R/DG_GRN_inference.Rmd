@@ -45,13 +45,11 @@ library(scDblFinder)
 library(wrapr)
 library(transformGamPoi)
 library(ggprism)
-#devtools::install("../../../../../apps/EasyMultiome/") #Must run at one point
 library(EasyMultiome)
 library(igraph)
 library(visNetwork)
 library(htmlwidgets)
 #library(consensusClustR)
-#devtools::load_all("../../../../../apps/EasyMulti_DElegate/")
 library(ggtext)
 library(glue)
 library(DOSE)
@@ -72,10 +70,10 @@ use_python(path_to_python)
 options(future.globals.maxSize = 10000 * 1024^2)
 
 # Some relative paths
-cellRanger = "../../../cellrangerOutput/"
-clusters = "../clusters/"
-plots = "../plots/"
-objects =  "../objects/"
+cellRanger = "../../../data/processed/cellrangerOutput/"
+clusters = "../../../results/multiome/seurat_analysis/clusters/"
+plots = "../../../results/multiome/seurat_analysis/plots/"
+objects =  "../../../data/multiome/seurat_analysis/objects/"
 
 # Colour palette
 cb_pallette = c("#777a78", "#E4E1E3FF", "#F6222EFF", "#FE00FAFF", "#16FF32FF", "#3283FEFF", "#FEAF16FF", "#B00068FF", "#1CFFCEFF", "#90AD1CFF", "#2ED9FFFF", "#DEA0FDFF", "#AA0DFEFF", "#F8A19FFF", "#325A9BFF", "#C4451CFF", "#1C8356FF", "#85660DFF", "#B10DA1FF", "#FBE426FF", "#1CBE4FFF", "#FA0087FF", "#FC1CBFFF", "#F7E1A0FF", "#C075A6FF", "#782AB6FF", "#AAF400FF", "#BDCDFFFF", "#f2b672", "#B5EFB5FF", "#f75c02", "#5c0404", "#160459", "#FFFFCC", "#DF65B0", "#B3E2CD", "#FBB4AE", "#1F78B4", "#BDC9E1","#FDAE61", "#FFFF99","#02818A", "#F1B6DA","#DFC27D")
@@ -105,7 +103,7 @@ Load PRINT footprinting results
 ```{r}
 Cluster = "DG"
 load("regulon.rds")
-boundRegions = readRDS("../../PRINT/DG/boundRegions.rds") #foot printing PRINT footprinting
+boundRegions = readRDS("../../../data/PRINT/DG/boundRegions.rds") #foot printing PRINT footprinting
 library(randomForest)
 library(caret)
 library(doParallel)

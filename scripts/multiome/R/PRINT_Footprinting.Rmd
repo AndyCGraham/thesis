@@ -18,9 +18,9 @@ source("../PRINT/code/getTFBS.R")
 library(Seurat)
 library(Signac)
 
-Clusters = "../../multiomeSeurat/clusters/"
-projectMainDir <- "../DG/"
-projectDataDir <- "../data/"
+Clusters = "../../../results/multiome/seurat_analysis/clusters/"
+projectMainDir <- "../../../data/PRINT/DG/"
+projectDataDir <- "../../../data/"
 
 ##Start Python
 library(cluster)
@@ -38,7 +38,7 @@ dir.create(projectDataDir)
 
 #Merge Fragment Files
 metadata <- data.frame(
-  fragsFiles = purrr::map_chr(c("YN", "ON", "YC", "OC"), function(sample) paste0("../../../processedData/Multiome/CellRangerARC/", as.character(sample)  ,"/outs/atac_fragments.tsv.gz")),
+  fragsFiles = purrr::map_chr(c("YN", "ON", "YC", "OC"), function(sample) paste0("../../../data/processed/cellrangerOutput/CellRangerARC/", as.character(sample)  ,"/outs/atac_fragments.tsv.gz")),
   prefix = c("YN_", "ON_", "YC_", "OC_"),
   dataset = rep("Multiome", 4)
 )
@@ -81,8 +81,8 @@ write.table(peakBed, paste0(projectMainDir, "peaks.bed"),
 
 ```{bash}
 #Run to download TF binding and precomputed bias files
-#cd ../data
-#wget https://zenodo.org/record/7121027/files/mm10Tn5Bias.tar.gz -P ../precomputedTn5Bias
+#cd ../../../data/
+#wget https://zenodo.org/record/7121027/files/mm10Tn5Bias.tar.gz -P ../../../data/PRINT/precomputedTn5Bias
 #tar -xvf mm10Tn5Bias.tar.gz
 #wget https://zenodo.org/record/7121027/files/TFBS_model.h5
 #wget https://zenodo.org/records/7121027/files/dispModel.tar.gz
