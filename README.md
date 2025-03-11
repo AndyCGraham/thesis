@@ -1,6 +1,6 @@
 # Andrew C Graham Thesis Code
 
-This repository contains the code used to produce the thesis of Andrew C Graham. The code is organized into several scripts and notebooks that should be run in a specific order to reproduce the results presented in the thesis. Data files will be released upon publication of this work, until that time this repository serves to provide insight into the computational methods and approaches used to generate the thesis.
+This repository contains the code used to produce the thesis of Andrew C Graham, along with some supporting scripts for analyses related to this project. The code is organized into several scripts and notebooks that should be run in a specific order to reproduce the results presented in the thesis. Data files will be released upon publication of this work, until that time this repository serves to provide insight into the computational methods and approaches used to generate the thesis.
 
 ## To Add
 
